@@ -40,16 +40,28 @@ def mean_rho(
     per_target : np.ndarray of shape (M,)
         Correlation for each target.
     """
-    M = predictions.shape[1]
-    per_target = np.array(
-        [
-            np.corrcoef(predictions[:, m], observations[:, m])[0, 1]
-            if not np.isnan(predictions[:, m]).all()
-            else 0.0
-            for m in range(M)
-        ]
-    )
-    per_target = np.nan_to_num(per_target, nan=0.0)
+    # Vectorized Pearson correlation across all targets at once
+    has_nan = np.isnan(predictions).any()
+    if has_nan:
+        nan_mask = np.isnan(predictions)
+        pred = np.where(nan_mask, 0.0, predictions)
+        obs = np.where(nan_mask, 0.0, observations)
+        n = (~nan_mask).sum(axis=0).astype(float)
+        n = np.maximum(n, 1.0)
+        pred_mean = pred.sum(axis=0) / n
+        obs_mean = obs.sum(axis=0) / n
+        pred_c = np.where(nan_mask, 0.0, pred - pred_mean)
+        obs_c = np.where(nan_mask, 0.0, obs - obs_mean)
+    else:
+        pred_c = predictions - predictions.mean(axis=0)
+        obs_c = observations - observations.mean(axis=0)
+
+    cov = (pred_c * obs_c).sum(axis=0)
+    pred_std = np.sqrt((pred_c**2).sum(axis=0))
+    obs_std = np.sqrt((obs_c**2).sum(axis=0))
+    denom = pred_std * obs_std
+    per_target = np.where(denom > 0, cov / denom, 0.0)
+
     aggregate = float(np.mean(per_target))
     return aggregate, per_target
 
@@ -73,18 +85,11 @@ def rmse(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.n
     per_target : np.ndarray of shape (M,)
         RMSE for each target.
     """
-    M = predictions.shape[1]
-    per_target = np.zeros(M)
-
-    for m in range(M):
-        valid_mask = ~np.isnan(predictions[:, m])
-        if valid_mask.sum() > 0:
-            mse = np.mean(
-                (predictions[valid_mask, m] - observations[valid_mask, m]) ** 2
-            )
-            per_target[m] = np.sqrt(mse)
-        else:
-            per_target[m] = np.inf
+    diff = predictions - observations
+    sq = diff**2
+    per_target = np.sqrt(np.nanmean(sq, axis=0))
+    # If all NaN in a column, nanmean returns NaN -> replace with inf
+    per_target = np.where(np.isnan(per_target), np.inf, per_target)
 
     aggregate = float(np.mean(per_target))
     return aggregate, per_target
@@ -109,17 +114,10 @@ def mae(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.nd
     per_target : np.ndarray of shape (M,)
         MAE for each target.
     """
-    M = predictions.shape[1]
-    per_target = np.zeros(M)
-
-    for m in range(M):
-        valid_mask = ~np.isnan(predictions[:, m])
-        if valid_mask.sum() > 0:
-            per_target[m] = np.mean(
-                np.abs(predictions[valid_mask, m] - observations[valid_mask, m])
-            )
-        else:
-            per_target[m] = np.inf
+    diff = np.abs(predictions - observations)
+    per_target = np.nanmean(diff, axis=0)
+    # If all NaN in a column, nanmean returns NaN -> replace with inf
+    per_target = np.where(np.isnan(per_target), np.inf, per_target)
 
     aggregate = float(np.mean(per_target))
     return aggregate, per_target

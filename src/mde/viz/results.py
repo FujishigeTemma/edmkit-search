@@ -70,13 +70,19 @@ def plot_mde_results_multi(
     mde_data: dict,
     output_path: Path,
     *,
+    target_names: list[str] | None = None,
     train_ratio: float = 0.6,
     val_ratio: float = 0.2,
     gap: int = 0,
 ) -> None:
-    """Create 3-panel line chart for multi-target MDE results.
+    """Create multi-panel line chart for multi-target MDE results.
 
-    Panels: mean score, Left_Right score, FWD score.
+    Panels: mean score + one panel per target.
+
+    Parameters
+    ----------
+    target_names : list[str] | None
+        Display names for each target. If None, uses Target_0, Target_1, etc.
     """
     val_rhos = mde_data["val_rhos"]
     test_rhos = mde_data["test_rhos"]
@@ -87,15 +93,24 @@ def plot_mde_results_multi(
     if len(val_rhos) == 0:
         return
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    M = len(val_rhos_per_target[0])
+    if target_names is None:
+        target_names = [f"Target_{m}" for m in range(M)]
+
+    n_panels = 1 + M
+    fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
+    if n_panels == 1:
+        axes = [axes]
     x = np.arange(1, len(val_rhos) + 1)
     x_labels = [f"D{i}\n({var})" for i, var in enumerate(selected_vars, 1)]
 
-    panels = [
-        ("Mean Score", val_rhos, test_rhos),
-        ("Left_Right", [r[0] for r in val_rhos_per_target], [r[0] for r in test_rhos_per_target]),
-        ("FWD", [r[1] for r in val_rhos_per_target], [r[1] for r in test_rhos_per_target]),
-    ]
+    panels = [("Mean Score", val_rhos, test_rhos)]
+    for m, name in enumerate(target_names):
+        panels.append((
+            name,
+            [r[m] for r in val_rhos_per_target],
+            [r[m] for r in test_rhos_per_target],
+        ))
 
     for ax, (title, val, test) in zip(axes, panels):
         ax.plot(x, val, "o-", label="Validation", color="steelblue", linewidth=2, markersize=8)
@@ -154,13 +169,19 @@ def plot_predictions(
     query_indices = split.val_indices if split_name == "val" else split.test_indices
     ground_truth = target_values[query_indices]
 
-    predictions_list = []
-    for dim in range(1, len(selected_indices) + 1):
-        manifold = candidates[:, selected_indices[:dim]]
-        X_lib = manifold[split.train_indices]
-        Y_lib = target_values[split.train_indices]
-        preds = simplex_projection(X_lib, Y_lib, manifold[query_indices])
-        predictions_list.append(preds)
+    # Use pre-computed predictions if available
+    stored = mde_data.get("val_predictions" if split_name == "val" else "test_predictions")
+    if stored:
+        # Stored predictions are (N, M); for single-target plots squeeze to 1D
+        predictions_list = [p.squeeze() if p.ndim == 2 and p.shape[1] == 1 else p for p in stored]
+    else:
+        predictions_list = []
+        for dim in range(1, len(selected_indices) + 1):
+            manifold = candidates[:, selected_indices[:dim]]
+            X_lib = manifold[split.train_indices]
+            Y_lib = target_values[split.train_indices]
+            preds = simplex_projection(X_lib, Y_lib, manifold[query_indices])
+            predictions_list.append(preds)
 
     n_dims = len(predictions_list)
     fig, axes = plt.subplots(n_dims, 1, figsize=(14, 3 * n_dims), sharex=True)
@@ -196,6 +217,7 @@ def plot_predictions_multi(
     mde_data: dict,
     output_path: Path,
     *,
+    target_names: list[str] | None = None,
     train_ratio: float = 0.6,
     val_ratio: float = 0.2,
     gap: int = 0,
@@ -207,6 +229,8 @@ def plot_predictions_multi(
 
     Parameters
     ----------
+    target_names : list[str] | None
+        Display names for each target. If None, uses Target_0, Target_1, etc.
     split_name : str
         Which split to plot: "val" or "test".
     """
@@ -223,15 +247,22 @@ def plot_predictions_multi(
     query_indices = split.val_indices if split_name == "val" else split.test_indices
 
     M = targets.shape[1]
-    target_names = ["Left_Right", "FWD"]
+    if target_names is None:
+        target_names = [f"Target_{m}" for m in range(M)]
     observations = targets[query_indices]
 
     n_dims = len(selected_indices)
-    fig, axes = plt.subplots(n_dims, M, figsize=(14, 3 * n_dims), sharex=True)
+    fig, axes = plt.subplots(n_dims, M, figsize=(7 * M, 3 * n_dims), sharex=True)
     if n_dims == 1:
         axes = axes.reshape(1, -1)
+    if M == 1:
+        axes = axes.reshape(-1, 1)
 
-    colors = [matplotlib.colormaps["Blues"](0.7), matplotlib.colormaps["Oranges"](0.7)]
+    cmap_names = ["Blues", "Oranges", "Greens", "Reds", "Purples"]
+    colors = [matplotlib.colormaps[cmap_names[m % len(cmap_names)]](0.7) for m in range(M)]
+
+    # Use pre-computed predictions if available
+    stored = mde_data.get("val_predictions" if split_name == "val" else "test_predictions")
 
     for dim in range(1, n_dims + 1):
         manifold = candidates[:, selected_indices[:dim]]
@@ -240,8 +271,11 @@ def plot_predictions_multi(
 
         for m in range(M):
             ax = axes[dim - 1, m]
-            Y_lib = targets[split.train_indices, m]
-            preds = simplex_projection(X_lib, Y_lib, manifold[query_indices])
+            if stored:
+                preds = stored[dim - 1][:, m] if stored[dim - 1].ndim == 2 else stored[dim - 1]
+            else:
+                Y_lib = targets[split.train_indices, m]
+                preds = simplex_projection(X_lib, Y_lib, manifold[query_indices])
 
             ax.plot(query_indices, observations[:, m], "k-", linewidth=0.8, alpha=0.7, label="Ground Truth")
             ax.plot(query_indices, preds, "-", color=colors[m], linewidth=0.8, alpha=0.9,

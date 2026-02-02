@@ -3,5 +3,5 @@
 
 from .mde import ccm_convergence_test, evaluate_manifold, mde
 from .metrics import MetricFn, mae, mean_rho, rmse
-from .types import DataSplit, MDEResult
+from .types import CCMConvergenceResult, DataSplit, MDEResult
 from .validation import split_data

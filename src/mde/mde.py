@@ -11,9 +11,10 @@ from dataclasses import dataclass
 import numpy as np
 from edmkit import simplex_projection
 from edmkit.embedding import lagged_embed
+from scipy.optimize import least_squares
 
 from .metrics import MetricFn, mean_rho
-from .types import MDEResult
+from .types import CCMConvergenceResult, MDEResult
 from .util import ensure_2d
 from .validation import split_data
 
@@ -92,6 +93,66 @@ def evaluate_manifold(
     return metric(predictions, observations)
 
 
+def _fit_linear_wls(
+    L: np.ndarray, mu: np.ndarray, w: np.ndarray
+) -> tuple[float, float, float]:
+    """Weighted least-squares linear fit: s(L) = alpha + beta * L.
+
+    Returns (alpha, beta, rss) where rss is the unweighted residual sum of squares.
+    """
+    W = np.diag(w)
+    A = np.column_stack([np.ones_like(L), L])
+    AtW = A.T @ W
+    params = np.linalg.solve(AtW @ A, AtW @ mu)
+    alpha, beta = params
+    residuals = mu - (alpha + beta * L)
+    rss = float(np.sum(residuals**2))
+    return alpha, beta, rss
+
+
+def _fit_saturation_wls(
+    L: np.ndarray, mu: np.ndarray, w: np.ndarray
+) -> tuple[float, float, float, float]:
+    """Weighted least-squares saturation fit: s(L) = a - b * exp(-c * L).
+
+    b and c are constrained positive via exp reparameterization.
+
+    Returns (a, b, c, rss).
+    """
+    # Initial values
+    a0 = float(np.max(mu))
+    b0 = max(a0 - float(mu[0]), 1e-6)
+    # Rough c0: half-reach at midpoint L
+    L_mid = float(np.median(L))
+    c0 = max(np.log(2) / L_mid if L_mid > 0 else 0.01, 1e-6)
+
+    x0 = np.array([a0, np.log(b0), np.log(c0)])
+    sqrt_w = np.sqrt(w)
+
+    def residual_fn(x: np.ndarray) -> np.ndarray:
+        a, b_raw, c_raw = x
+        b = np.exp(b_raw)
+        c = np.exp(c_raw)
+        pred = a - b * np.exp(-c * L)
+        return sqrt_w * (mu - pred)
+
+    result = least_squares(residual_fn, x0, method="lm", max_nfev=2000)
+    a = result.x[0]
+    b = np.exp(result.x[1])
+    c = np.exp(result.x[2])
+    residuals = mu - (a - b * np.exp(-c * L))
+    rss = float(np.sum(residuals**2))
+    return a, b, c, rss
+
+
+def _compute_aicc(rss: float, n: int, k: int) -> float:
+    """Compute AICc (or AIC fallback when n <= k + 1)."""
+    aic = n * np.log(max(rss / n, 1e-300)) + 2 * k
+    if n > k + 1:
+        aic += 2 * k * (k + 1) / (n - k - 1)
+    return float(aic)
+
+
 def ccm_convergence_test(
     cause: np.ndarray,
     effect: np.ndarray,
@@ -100,15 +161,16 @@ def ccm_convergence_test(
     E: int = 2,
     tau: int = 1,
     num_samples: int = 20,
+    metric: MetricFn = mean_rho,
+    aicc_threshold: float = 4.0,
+    eps_var: float = 1e-12,
     rng: np.random.Generator | None = None,
-) -> tuple[np.ndarray, float]:
-    """Test for CCM convergence to verify causal relationship.
+) -> CCMConvergenceResult:
+    """Test for CCM convergence using AICc model comparison.
 
-    CCM principle: If X causes Y, then Y's manifold contains information
-    about X. As library size increases, cross-mapping skill should converge.
-
-    Supports multi-target: if cause/effect have multiple columns, computes
-    mean convergence across all targets.
+    Compares a saturation model s(L) = a - b*exp(-c*L) against a linear model
+    s(L) = alpha + beta*L via AICc. A positive delta_aicc indicates the
+    saturation (convergence) model is favored.
 
     Parameters
     ----------
@@ -124,15 +186,19 @@ def ccm_convergence_test(
         Time delay. Default is 1.
     num_samples : int, optional
         Number of random samples per library size. Default is 20.
+    metric : MetricFn, optional
+        Metric function to evaluate predictions. Default is mean_rho.
+    aicc_threshold : float, optional
+        Minimum delta_aicc to declare convergence. Default is 4.0.
+    eps_var : float, optional
+        Minimum variance floor to avoid division by zero in weights. Default is 1e-12.
     rng : np.random.Generator | None, optional
         Random number generator.
 
     Returns
     -------
-    rho_values : np.ndarray
-        Array of mean rho at each library size.
-    convergence_score : float
-        rho[-1] - rho[0] (positive indicates convergence).
+    CCMConvergenceResult
+        Result containing convergence decision, scores, AICc values, and fitted params.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -159,13 +225,13 @@ def ccm_convergence_test(
     )  # (M, L, E)
     cause_aligned = cause[offset:]  # (L, M)
 
-    rho_values = np.zeros(len(lib_sizes))
+    # Collect all scores per lib_size
+    all_samples: list[list[float]] = [[] for _ in range(len(lib_sizes))]
 
     for i, lib_size in enumerate(lib_sizes):
         if lib_size >= min_L:
             lib_size = min_L - 1
 
-        rho_samples = []
         for _ in range(num_samples):
             lib_indices = rng.choice(min_L, lib_size, replace=False)
             test_mask = np.ones(min_L, dtype=bool)
@@ -175,8 +241,9 @@ def ccm_convergence_test(
             if len(test_indices) == 0:
                 continue
 
-            # Compute rho for each target and average
-            target_rhos = []
+            # Build predictions and observations across all targets
+            all_preds = []
+            all_obs = []
             for m in range(M):
                 X_lib = effect_embedded[m, lib_indices]
                 Y_lib = cause_aligned[lib_indices, m]
@@ -184,18 +251,63 @@ def ccm_convergence_test(
                 observations = cause_aligned[test_indices, m]
 
                 predictions = simplex_projection(X_lib, Y_lib, query_points)
-                rho = np.corrcoef(observations, predictions)[0, 1]
+                all_preds.append(predictions)
+                all_obs.append(observations)
 
-                if not np.isnan(rho):
-                    target_rhos.append(rho)
+            # Stack to (N_test, M) and compute metric
+            pred_matrix = np.column_stack(all_preds)
+            obs_matrix = np.column_stack(all_obs)
+            score, _ = metric(pred_matrix, obs_matrix)
+            all_samples[i].append(score)
 
-            if target_rhos:
-                rho_samples.append(np.mean(target_rhos))
+    # Compute mean and variance at each lib_size
+    n = len(lib_sizes)
+    score_mean = np.zeros(n)
+    score_var = np.zeros(n)
+    for i in range(n):
+        if all_samples[i]:
+            score_mean[i] = np.mean(all_samples[i])
+            score_var[i] = (
+                np.var(all_samples[i], ddof=1) if len(all_samples[i]) > 1 else 0.0
+            )
+        else:
+            score_mean[i] = 0.0
+            score_var[i] = 0.0
 
-        rho_values[i] = np.mean(rho_samples) if rho_samples else 0.0
+    # WLS weights
+    w = 1.0 / np.maximum(score_var, eps_var)
+    L_arr = np.array(lib_sizes, dtype=float)
 
-    convergence_score = rho_values[-1] - rho_values[0]
-    return rho_values, convergence_score
+    # Fit models and compute AICc
+    try:
+        alpha, beta, rss_linear = _fit_linear_wls(L_arr, score_mean, w)
+        a, b, c, rss_sat = _fit_saturation_wls(L_arr, score_mean, w)
+    except Exception:
+        return CCMConvergenceResult(
+            converged=False,
+            score_mean=score_mean,
+            score_var=score_var,
+            aicc_saturation=np.inf,
+            aicc_linear=np.inf,
+            delta_aicc=0.0,
+            saturation_params=(0.0, 0.0, 0.0),
+            linear_params=(0.0, 0.0),
+        )
+
+    aicc_linear = _compute_aicc(rss_linear, n, k=2)
+    aicc_sat = _compute_aicc(rss_sat, n, k=3)
+    delta_aicc = aicc_linear - aicc_sat
+
+    return CCMConvergenceResult(
+        converged=delta_aicc >= aicc_threshold,
+        score_mean=score_mean,
+        score_var=score_var,
+        aicc_saturation=aicc_sat,
+        aicc_linear=aicc_linear,
+        delta_aicc=delta_aicc,
+        saturation_params=(a, b, c),
+        linear_params=(alpha, beta),
+    )
 
 
 def mde(
@@ -209,7 +321,7 @@ def mde(
     val_ratio: float = 0.2,
     gap: int = 0,
     ccm_validation: bool = False,
-    ccm_threshold: float = 0.1,
+    ccm_threshold: float = 4.0,
     rng: np.random.Generator | None = None,
 ) -> MDEResult:
     """Perform Manifold Dimension Expansion to discover causal relationships.
@@ -243,7 +355,7 @@ def mde(
     ccm_validation : bool, optional
         Whether to perform CCM validation. Default is False.
     ccm_threshold : float, optional
-        Minimum CCM convergence threshold. Default is 0.1.
+        Minimum delta_aicc for CCM convergence. Default is 4.0.
     rng : np.random.Generator | None, optional
         Random number generator for reproducibility.
 
@@ -260,7 +372,7 @@ def mde(
 
     Examples
     --------
-    >>> from multi_target_mde import mde, mean_rho
+    >>> from mde import mde, mean_rho
     >>> result = mde(candidates, target, metric=mean_rho, threshold=0.3)
 
     Using custom metric (minimize RMSE):
@@ -305,6 +417,8 @@ def mde(
     val_scores_per_target: list[np.ndarray] = []
     test_scores_per_target: list[np.ndarray] = []
     ccm_scores: list[float] | None = [] if ccm_validation else None
+    val_predictions: list[np.ndarray] = []
+    test_predictions: list[np.ndarray] = []
 
     max_workers = os.cpu_count() or 1
 
@@ -315,7 +429,16 @@ def mde(
         best_ccm_score: float | None = None
 
         eval_args = [
-            (var_idx, selected_indices, X_train, X_val, Y_train, Y_val, threshold, metric)
+            (
+                var_idx,
+                selected_indices,
+                X_train,
+                X_val,
+                Y_train,
+                Y_val,
+                threshold,
+                metric,
+            )
             for var_idx in available_indices
         ]
 
@@ -337,29 +460,31 @@ def mde(
                 # Only run CCM test if this candidate could be the new best
                 if score > best_score:
                     train_size = len(split.train_indices)
-                    lib_sizes = [
-                        int(train_size * r) for r in [0.1, 0.3, 0.5, 0.7, 0.9]
-                    ]
-                    # Ensure minimum library size and remove duplicates
-                    lib_sizes = sorted(set(max(2, s) for s in lib_sizes))
+                    # Log-spaced lib_sizes for better saturation detection
+                    lib_sizes = np.unique(
+                        np.geomspace(10, max(10, train_size * 0.8), num=8).astype(int)
+                    ).tolist()
+                    lib_sizes = [max(2, s) for s in lib_sizes]
 
                     cause = X_train[:, var_idx : var_idx + 1]
 
-                    _, convergence_score = ccm_convergence_test(
+                    ccm_result = ccm_convergence_test(
                         cause=cause,
                         effect=Y_train,
                         lib_sizes=lib_sizes,
                         E=2,
                         tau=1,
-                        num_samples=5,
+                        num_samples=20,
+                        metric=metric,
+                        aicc_threshold=ccm_threshold,
                         rng=rng,
                     )
 
-                    if convergence_score >= ccm_threshold:
+                    if ccm_result.converged:
                         best_candidate = var_idx
                         best_score = score
                         best_per_target_scores = per_target_scores
-                        best_ccm_score = convergence_score
+                        best_ccm_score = ccm_result.delta_aicc
             else:
                 if score > best_score:
                     best_candidate = var_idx
@@ -379,11 +504,19 @@ def mde(
         if ccm_scores is not None and best_ccm_score is not None:
             ccm_scores.append(best_ccm_score)
 
-        # Evaluate on test set using pre-sliced arrays
+        # Evaluate on val/test sets using pre-sliced arrays and store predictions
         manifold_train = X_train[:, selected_indices]
+        manifold_val = X_val[:, selected_indices]
         manifold_test = X_test[:, selected_indices]
+
+        val_pred = simplex_projection(manifold_train, Y_train, manifold_val)
+        val_pred = ensure_2d(val_pred)
+        val_predictions.append(val_pred)
+
         test_pred = simplex_projection(manifold_train, Y_train, manifold_test)
         test_pred = ensure_2d(test_pred)
+        test_predictions.append(test_pred)
+
         test_score, test_per_target = metric(test_pred, Y_test)
         test_scores.append(test_score)
         test_scores_per_target.append(test_per_target)
@@ -397,6 +530,8 @@ def mde(
             val_rhos_per_target=[],
             test_rhos_per_target=[],
             ccm_scores=ccm_scores,
+            val_predictions=[],
+            test_predictions=[],
         )
 
     final_manifold = candidates[:, selected_indices]
@@ -409,4 +544,6 @@ def mde(
         val_rhos_per_target=val_scores_per_target,
         test_rhos_per_target=test_scores_per_target,
         ccm_scores=ccm_scores,
+        val_predictions=val_predictions,
+        test_predictions=test_predictions,
     )

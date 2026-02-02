@@ -9,7 +9,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "edmkit==0.0.0a1",
+    "edmkit==0.0.1a1",
     "line-profiler>=5.0.0",
     "marimo>=0.19.6",
     "matplotlib>=3.10.8",
