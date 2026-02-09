@@ -4,8 +4,8 @@ This module provides metric functions for evaluating prediction quality in MDE.
 Each metric function takes predictions and observations and returns an aggregate
 score and per-target scores.
 
-Convention: All metrics return raw values. Use `higher_is_better` parameter
-in mde() to specify comparison direction.
+Convention: All metrics return raw values. MDE maximizes the metric score,
+so use ``negate()`` for lower-is-better metrics (e.g., RMSE, MAE).
 """
 
 from collections.abc import Callable
@@ -13,10 +13,40 @@ from typing import TypeAlias
 
 import numpy as np
 
-# Type alias for metric functions
-# Input: predictions (N, M), observations (N, M)
-# Output: (aggregate_score, per_target_scores of shape (M,))
 MetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], tuple[float, np.ndarray]]
+
+
+def _validate_metric_inputs(predictions: np.ndarray, observations: np.ndarray) -> None:
+    """Validate inputs common to all metric functions."""
+    if predictions.shape != observations.shape:
+        raise ValueError(
+            f"Shape mismatch: predictions {predictions.shape} vs observations {observations.shape}"
+        )
+    if predictions.ndim != 2:
+        raise ValueError(f"Expected 2D arrays (N, M), got {predictions.ndim}D")
+
+
+def negate(metric: MetricFn) -> MetricFn:
+    """Negate a metric function for use with lower-is-better metrics.
+
+    Parameters
+    ----------
+    metric : MetricFn
+        A metric function returning (aggregate, per_target).
+
+    Returns
+    -------
+    MetricFn
+        A new metric function that returns negated scores.
+    """
+
+    def negated(
+        predictions: np.ndarray, observations: np.ndarray
+    ) -> tuple[float, np.ndarray]:
+        agg, per_target = metric(predictions, observations)
+        return -agg, -per_target
+
+    return negated
 
 
 def mean_rho(
@@ -40,6 +70,7 @@ def mean_rho(
     per_target : np.ndarray of shape (M,)
         Correlation for each target.
     """
+    _validate_metric_inputs(predictions, observations)
     # Vectorized Pearson correlation across all targets at once
     has_nan = np.isnan(predictions).any()
     if has_nan:
@@ -85,6 +116,7 @@ def rmse(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.n
     per_target : np.ndarray of shape (M,)
         RMSE for each target.
     """
+    _validate_metric_inputs(predictions, observations)
     diff = predictions - observations
     sq = diff**2
     per_target = np.sqrt(np.nanmean(sq, axis=0))
@@ -114,6 +146,7 @@ def mae(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.nd
     per_target : np.ndarray of shape (M,)
         MAE for each target.
     """
+    _validate_metric_inputs(predictions, observations)
     diff = np.abs(predictions - observations)
     per_target = np.nanmean(diff, axis=0)
     # If all NaN in a column, nanmean returns NaN -> replace with inf
