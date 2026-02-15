@@ -8,7 +8,7 @@ import numpy as np
 from .metrics import MetricFn
 
 PredictFn: TypeAlias = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
-"""Prediction function signature: (X_lib, Y_lib, X_query) -> predictions."""
+"""Prediction function signature: (X_train, Y_train, X_query) -> predictions."""
 
 
 def _ensure_2d(arr: np.ndarray) -> np.ndarray:
@@ -37,23 +37,23 @@ def _ensure_2d(arr: np.ndarray) -> np.ndarray:
 
 def prediction_skill(
     manifold: np.ndarray,
-    targets: np.ndarray,
+    target: np.ndarray,
     train_indices: np.ndarray,
     query_indices: np.ndarray,
     *,
     predict: PredictFn,
     metric: MetricFn,
-) -> tuple[float, np.ndarray, np.ndarray]:
+) -> tuple[float, np.ndarray]:
     """Compute prediction skill of a manifold.
 
     Parameters
     ----------
     manifold : np.ndarray of shape (T, D)
         State space manifold.
-    targets : np.ndarray of shape (T,) or (T, M)
+    target : np.ndarray of shape (T,) or (T, M)
         Target variable(s) to predict.
     train_indices : np.ndarray
-        Indices for library construction.
+        Indices for training.
     query_indices : np.ndarray
         Indices for prediction evaluation.
     predict : PredictFn
@@ -64,9 +64,7 @@ def prediction_skill(
     Returns
     -------
     score : float
-        Aggregate score across all targets.
-    per_target : np.ndarray of shape (M,)
-        Score for each target.
+        Scalar score.
     predictions : np.ndarray
         Prediction results.
 
@@ -97,14 +95,14 @@ def prediction_skill(
                 f"max={query_indices.max()}, expected [0, {T})"
             )
 
-    targets = _ensure_2d(targets)
+    target = _ensure_2d(target)
 
-    X_lib = manifold[train_indices]
-    Y_lib = targets[train_indices]
+    X_train = manifold[train_indices]
+    Y_train = target[train_indices]
     X_query = manifold[query_indices]
 
-    predictions = predict(X_lib, Y_lib, X_query)
+    predictions = predict(X_train, Y_train, X_query)
     predictions = _ensure_2d(predictions)
 
-    score, per_target = metric(predictions, targets[query_indices])
-    return score, per_target, predictions
+    score = metric(predictions, target[query_indices])
+    return score, predictions

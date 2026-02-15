@@ -1,56 +1,25 @@
 # ruff: noqa: F401
 """MDE (Manifold Dimension Expansion) for causal discovery."""
 
-# High-level API
-from .ccm import ccm_converged, ccm_convergence_diagnostics, CCMDiagnostics, make_ccm_filter
-from .selection import (
-    mde,
-    select,
-    select_iter,
-    get_predictions,
-    evaluate_manifold,
-    MDEResult,
-    SelectionStep,
-    SelectionResult,
-    EvaluationResult,
-    MetricConfig,
-    CandidateFilter,
-)
-from .splits import temporal_split, TemporalSplit
+# Core algorithm
+from .core import mde, build_result, get_predictions, evaluate_manifold
+
+# Search
+from .search import greedy, greedy_iter
 
 # Building blocks
-from .skill import prediction_skill, PredictFn
+from .skill import prediction_skill
+
+# Splits
+from .splits import temporal_split
 
 # Metrics
-from .metrics import MetricFn, mae, mean_rho, negate, rmse
+from .metrics import mae, mean_rho, negate, rmse
+from .metrics import mae_per_dim, mean_rho_per_dim, rmse_per_dim
 
-__all__ = [
-    # High-level API
-    "mde",
-    "select",
-    "select_iter",
-    "get_predictions",
-    "evaluate_manifold",
-    "ccm_converged",
-    "ccm_convergence_diagnostics",
-    "make_ccm_filter",
-    "temporal_split",
-    # Building blocks
-    "prediction_skill",
-    # Types
-    "PredictFn",
-    "MetricFn",
-    "CandidateFilter",
-    "TemporalSplit",
-    "MDEResult",
-    "SelectionStep",
-    "SelectionResult",
-    "EvaluationResult",
-    "CCMDiagnostics",
-    "MetricConfig",
-    # Metrics
-    "mae",
-    "rmse",
-    "mean_rho",
-    "negate",
-]
+# Types
+from .core import Result, Evaluation
+from .search import Selection, Filter, Step
+from .splits import Split
+from .skill import PredictFn
+from .metrics import MetricFn, PerDimMetricFn

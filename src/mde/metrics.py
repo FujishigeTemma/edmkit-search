@@ -1,22 +1,43 @@
 """Evaluation metrics for MDE optimization.
 
 This module provides metric functions for evaluating prediction quality in MDE.
-Each metric function takes predictions and observations and returns an aggregate
-score and per-target scores.
 
-Convention: All metrics return raw values. MDE maximizes the metric score,
-so use ``negate()`` for lower-is-better metrics (e.g., RMSE, MAE).
+Scalar functions (``rmse``, ``mae``, ``mean_rho``) return a single float and
+are the standard API. Per-dimension variants (``rmse_per_dim``, etc.) return
+a 1-D array of shape ``(M,)`` for per-target analysis and visualization.
+
+Convention: MDE maximizes the metric score, so use ``negate()`` for
+lower-is-better metrics (e.g., RMSE, MAE).
 """
 
 from collections.abc import Callable
-from typing import TypeAlias
+from typing import NamedTuple, TypeAlias
 
 import numpy as np
 
-MetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], tuple[float, np.ndarray]]
+MetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], float]
+"""Metric function returning a scalar score."""
+
+PerDimMetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], np.ndarray]
+"""Metric function returning per-target scores of shape (M,)."""
 
 
-def _validate_metric_inputs(predictions: np.ndarray, observations: np.ndarray) -> None:
+class Config(NamedTuple):
+    """Configuration pairing a metric with a selection threshold.
+
+    Parameters
+    ----------
+    metric : MetricFn
+        Metric function.
+    threshold : float
+        Minimum score for candidate selection.
+    """
+
+    metric: MetricFn
+    threshold: float
+
+
+def _validate(predictions: np.ndarray, observations: np.ndarray) -> None:
     """Validate inputs common to all metric functions."""
     if predictions.shape != observations.shape:
         raise ValueError(
@@ -32,29 +53,29 @@ def negate(metric: MetricFn) -> MetricFn:
     Parameters
     ----------
     metric : MetricFn
-        A metric function returning (aggregate, per_target).
+        A metric function returning a scalar score.
 
     Returns
     -------
     MetricFn
-        A new metric function that returns negated scores.
+        A new metric function that returns the negated score.
     """
 
-    def negated(
-        predictions: np.ndarray, observations: np.ndarray
-    ) -> tuple[float, np.ndarray]:
-        agg, per_target = metric(predictions, observations)
-        return -agg, -per_target
+    def negated(predictions: np.ndarray, observations: np.ndarray) -> float:
+        return -metric(predictions, observations)
 
     return negated
 
 
-def mean_rho(
-    predictions: np.ndarray, observations: np.ndarray
-) -> tuple[float, np.ndarray]:
-    """Compute mean Pearson correlation coefficient.
+# ---------------------------------------------------------------------------
+# Per-dimension metrics (return shape (M,))
+# ---------------------------------------------------------------------------
 
-    Higher values indicate better predictions.
+
+def mean_rho_per_dim(
+    predictions: np.ndarray, observations: np.ndarray
+) -> np.ndarray:
+    """Compute Pearson correlation coefficient per target.
 
     Parameters
     ----------
@@ -65,42 +86,21 @@ def mean_rho(
 
     Returns
     -------
-    aggregate : float
-        Mean correlation across all targets.
     per_target : np.ndarray of shape (M,)
         Correlation for each target.
     """
-    _validate_metric_inputs(predictions, observations)
-    # Vectorized Pearson correlation across all targets at once
-    has_nan = np.isnan(predictions).any()
-    if has_nan:
-        nan_mask = np.isnan(predictions)
-        pred = np.where(nan_mask, 0.0, predictions)
-        obs = np.where(nan_mask, 0.0, observations)
-        n = (~nan_mask).sum(axis=0).astype(float)
-        n = np.maximum(n, 1.0)
-        pred_mean = pred.sum(axis=0) / n
-        obs_mean = obs.sum(axis=0) / n
-        pred_c = np.where(nan_mask, 0.0, pred - pred_mean)
-        obs_c = np.where(nan_mask, 0.0, obs - obs_mean)
-    else:
-        pred_c = predictions - predictions.mean(axis=0)
-        obs_c = observations - observations.mean(axis=0)
-
-    cov = (pred_c * obs_c).sum(axis=0)
-    pred_std = np.sqrt((pred_c**2).sum(axis=0))
-    obs_std = np.sqrt((obs_c**2).sum(axis=0))
-    denom = pred_std * obs_std
-    per_target = np.where(denom > 0, cov / denom, 0.0)
-
-    aggregate = float(np.mean(per_target))
-    return aggregate, per_target
+    _validate(predictions, observations)
+    predictions_c = predictions - predictions.mean(axis=0)
+    observations_c = observations - observations.mean(axis=0)
+    cov = (predictions_c * observations_c).sum(axis=0)
+    denom = np.sqrt((predictions_c**2).sum(axis=0) * (observations_c**2).sum(axis=0))
+    return np.where(denom > 0, cov / denom, 0.0)
 
 
-def rmse(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute Root Mean Squared Error.
-
-    Lower values indicate better predictions.
+def rmse_per_dim(
+    predictions: np.ndarray, observations: np.ndarray
+) -> np.ndarray:
+    """Compute Root Mean Squared Error per target.
 
     Parameters
     ----------
@@ -111,26 +111,17 @@ def rmse(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.n
 
     Returns
     -------
-    aggregate : float
-        Mean RMSE across all targets.
     per_target : np.ndarray of shape (M,)
         RMSE for each target.
     """
-    _validate_metric_inputs(predictions, observations)
-    diff = predictions - observations
-    sq = diff**2
-    per_target = np.sqrt(np.nanmean(sq, axis=0))
-    # If all NaN in a column, nanmean returns NaN -> replace with inf
-    per_target = np.where(np.isnan(per_target), np.inf, per_target)
-
-    aggregate = float(np.mean(per_target))
-    return aggregate, per_target
+    _validate(predictions, observations)
+    return np.sqrt(np.mean((predictions - observations) ** 2, axis=0))
 
 
-def mae(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.ndarray]:
-    """Compute Mean Absolute Error.
-
-    Lower values indicate better predictions.
+def mae_per_dim(
+    predictions: np.ndarray, observations: np.ndarray
+) -> np.ndarray:
+    """Compute Mean Absolute Error per target.
 
     Parameters
     ----------
@@ -141,16 +132,69 @@ def mae(predictions: np.ndarray, observations: np.ndarray) -> tuple[float, np.nd
 
     Returns
     -------
-    aggregate : float
-        Mean MAE across all targets.
     per_target : np.ndarray of shape (M,)
         MAE for each target.
     """
-    _validate_metric_inputs(predictions, observations)
-    diff = np.abs(predictions - observations)
-    per_target = np.nanmean(diff, axis=0)
-    # If all NaN in a column, nanmean returns NaN -> replace with inf
-    per_target = np.where(np.isnan(per_target), np.inf, per_target)
+    _validate(predictions, observations)
+    return np.mean(np.abs(predictions - observations), axis=0)
 
-    aggregate = float(np.mean(per_target))
-    return aggregate, per_target
+
+# ---------------------------------------------------------------------------
+# Scalar metrics (standard API, return float)
+# ---------------------------------------------------------------------------
+
+
+def mean_rho(predictions: np.ndarray, observations: np.ndarray) -> float:
+    """Compute mean Pearson correlation across targets.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    float
+        Mean correlation across all targets.
+    """
+    return float(np.mean(mean_rho_per_dim(predictions, observations)))
+
+
+def rmse(predictions: np.ndarray, observations: np.ndarray) -> float:
+    """Compute Root Mean Squared Error over all elements.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    float
+        RMSE across all elements.
+    """
+    _validate(predictions, observations)
+    return float(np.sqrt(np.mean((predictions - observations) ** 2)))
+
+
+def mae(predictions: np.ndarray, observations: np.ndarray) -> float:
+    """Compute Mean Absolute Error over all elements.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    float
+        MAE across all elements.
+    """
+    _validate(predictions, observations)
+    return float(np.mean(np.abs(predictions - observations)))

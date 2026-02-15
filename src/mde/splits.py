@@ -5,7 +5,7 @@ from typing import NamedTuple
 import numpy as np
 
 
-class TemporalSplit(NamedTuple):
+class Split(NamedTuple):
     """Three-way temporal split of time series data.
 
     Attributes
@@ -29,7 +29,7 @@ def temporal_split(
     val_ratio: float = 0.2,
     *,
     gap: int = 0,
-) -> TemporalSplit:
+) -> Split:
     """Split time series indices temporally.
 
     Layout::
@@ -49,7 +49,7 @@ def temporal_split(
 
     Returns
     -------
-    TemporalSplit
+    Split
         Split indices.
 
     Raises
@@ -82,7 +82,7 @@ def temporal_split(
     if len(test) == 0:
         raise ValueError("Test set is empty")
 
-    return TemporalSplit(
+    return Split(
         train=train,
         val=val,
         test=test,

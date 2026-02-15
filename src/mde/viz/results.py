@@ -5,15 +5,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.figure import Figure
 
-from .types import MDEPlotData
+from .types import PlotData
 
 
-def plot_mde_results(mde_data: MDEPlotData) -> Figure:
+def plot_mde_results(mde_data: PlotData) -> Figure:
     """Create line chart showing val vs test score at each dimension.
 
     Parameters
     ----------
-    mde_data : MDEPlotData
+    mde_data : PlotData
         Pre-computed MDE results.
 
     Returns
@@ -90,7 +90,7 @@ def plot_mde_results(mde_data: MDEPlotData) -> Figure:
 
 
 def plot_mde_results_multi(
-    mde_data: MDEPlotData,
+    mde_data: PlotData,
     *,
     target_names: list[str] | None = None,
 ) -> Figure:
@@ -98,7 +98,7 @@ def plot_mde_results_multi(
 
     Parameters
     ----------
-    mde_data : MDEPlotData
+    mde_data : PlotData
         Pre-computed MDE results.
     target_names : list[str] | None
         Display names for each target. If None, uses Target_0, Target_1, etc.
@@ -182,12 +182,12 @@ def plot_mde_results_multi(
     return fig
 
 
-def plot_predictions(mde_data: MDEPlotData) -> Figure:
+def plot_predictions(mde_data: PlotData) -> Figure:
     """Plot ground truth vs predictions at each dimension step.
 
     Parameters
     ----------
-    mde_data : MDEPlotData
+    mde_data : PlotData
         Pre-computed MDE results including query_indices, observations,
         and predictions_per_dim.
 
@@ -218,7 +218,7 @@ def plot_predictions(mde_data: MDEPlotData) -> Figure:
 
     colors = matplotlib.colormaps["viridis"](np.linspace(0, 0.8, n_dims))
 
-    for i, (pred, ax) in enumerate(zip(predictions_list, axes)):
+    for i, (prediction, ax) in enumerate(zip(predictions_list, axes)):
         dim = i + 1
         vars_used = ", ".join(selected_vars[:dim])
 
@@ -232,7 +232,7 @@ def plot_predictions(mde_data: MDEPlotData) -> Figure:
         )
         ax.plot(
             query_indices,
-            pred,
+            prediction,
             "-",
             color=colors[i],
             linewidth=0.8,
@@ -240,9 +240,9 @@ def plot_predictions(mde_data: MDEPlotData) -> Figure:
             label=f"Prediction (D={dim})",
         )
 
-        valid_mask = ~np.isnan(pred)
+        valid_mask = ~np.isnan(prediction)
         rho = (
-            np.corrcoef(ground_truth[valid_mask], pred[valid_mask])[0, 1]
+            np.corrcoef(ground_truth[valid_mask], prediction[valid_mask])[0, 1]
             if valid_mask.sum() > 1
             else np.nan
         )
@@ -259,7 +259,7 @@ def plot_predictions(mde_data: MDEPlotData) -> Figure:
 
 
 def plot_predictions_multi(
-    mde_data: MDEPlotData,
+    mde_data: PlotData,
     *,
     target_names: list[str] | None = None,
 ) -> Figure:
@@ -267,7 +267,7 @@ def plot_predictions_multi(
 
     Parameters
     ----------
-    mde_data : MDEPlotData
+    mde_data : PlotData
         Pre-computed MDE results.
     target_names : list[str] | None
         Display names for each target.
@@ -303,11 +303,11 @@ def plot_predictions_multi(
     for dim_idx in range(n_dims):
         dim = dim_idx + 1
         vars_used = ", ".join(selected_vars[:dim])
-        preds = predictions_list[dim_idx]
+        predictions = predictions_list[dim_idx]
 
         for m in range(M):
             ax = axes[dim_idx, m]
-            pred_m = preds[:, m] if preds.ndim == 2 else preds
+            prediction_m = predictions[:, m] if predictions.ndim == 2 else predictions
 
             ax.plot(
                 query_indices,
@@ -319,7 +319,7 @@ def plot_predictions_multi(
             )
             ax.plot(
                 query_indices,
-                pred_m,
+                prediction_m,
                 "-",
                 color=colors[m],
                 linewidth=0.8,
@@ -327,9 +327,9 @@ def plot_predictions_multi(
                 label=f"Prediction (D={dim})",
             )
 
-            valid_mask = ~np.isnan(pred_m)
+            valid_mask = ~np.isnan(prediction_m)
             rho = (
-                np.corrcoef(observations[valid_mask, m], pred_m[valid_mask])[0, 1]
+                np.corrcoef(observations[valid_mask, m], prediction_m[valid_mask])[0, 1]
                 if valid_mask.sum() > 1
                 else np.nan
             )

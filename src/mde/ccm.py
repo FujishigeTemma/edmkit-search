@@ -1,7 +1,5 @@
 """CCM (Convergent Cross-Mapping) convergence test."""
 
-from typing import NamedTuple
-
 import numpy as np
 from edmkit.embedding import lagged_embed
 from scipy.optimize import least_squares
@@ -11,68 +9,7 @@ from .skill import PredictFn, _ensure_2d
 
 
 # ---------------------------------------------------------------------------
-# Internal data structures
-# ---------------------------------------------------------------------------
-
-
-class _CCMSampleStats(NamedTuple):
-    """Internal: sampling statistics."""
-
-    lib_sizes: np.ndarray
-    score_mean: np.ndarray
-    score_var: np.ndarray
-
-
-class _CCMModelFit(NamedTuple):
-    """Internal: model fitting results."""
-
-    aicc_saturation: float
-    aicc_linear: float
-    delta_aicc: float
-    saturation_params: tuple[float, float, float]
-    linear_params: tuple[float, float]
-
-
-# ---------------------------------------------------------------------------
-# Public data structures
-# ---------------------------------------------------------------------------
-
-
-class CCMDiagnostics(NamedTuple):
-    """Diagnostics for CCM convergence test.
-
-    Parameters
-    ----------
-    lib_sizes : np.ndarray
-        Shape (n_lib_sizes,) - library sizes tested.
-    score_mean : np.ndarray
-        Shape (n_lib_sizes,) - mean score at each library size.
-    score_var : np.ndarray
-        Shape (n_lib_sizes,) - variance of scores at each library size.
-    aicc_saturation : float
-        AICc of the saturation model.
-    aicc_linear : float
-        AICc of the linear model.
-    delta_aicc : float
-        AICc_linear - AICc_saturation. Positive means saturation is favored.
-    saturation_params : tuple[float, float, float]
-        Fitted (a, b, c) for s(L) = a - b * exp(-c * L).
-    linear_params : tuple[float, float]
-        Fitted (alpha, beta) for s(L) = alpha + beta * L.
-    """
-
-    lib_sizes: np.ndarray
-    score_mean: np.ndarray
-    score_var: np.ndarray
-    aicc_saturation: float
-    aicc_linear: float
-    delta_aicc: float
-    saturation_params: tuple[float, float, float]
-    linear_params: tuple[float, float]
-
-
-# ---------------------------------------------------------------------------
-# Internal helper functions
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 
@@ -171,31 +108,31 @@ def _sample_ccm_scores(
         actual_lib_size = min(lib_size, min_L - 1)
 
         for _ in range(num_samples):
-            lib_indices = rng.choice(min_L, actual_lib_size, replace=False)
+            train_indices = rng.choice(min_L, actual_lib_size, replace=False)
             test_mask = np.ones(min_L, dtype=bool)
-            test_mask[lib_indices] = False
+            test_mask[train_indices] = False
             test_indices = np.where(test_mask)[0]
 
             if len(test_indices) == 0:
                 continue
 
-            all_preds = []
-            all_obs = []
+            all_predictions = []
+            all_observations = []
             for m in range(M_effect):
                 # Use corresponding cause column, or column 0 if cause is univariate
                 cause_idx = m if M_cause > 1 else 0
-                X_lib = effect_embedded[m, lib_indices]
-                Y_lib = cause[lib_indices, cause_idx]
-                query_points = effect_embedded[m, test_indices]
+                X_train = effect_embedded[m, train_indices]
+                Y_train = cause[train_indices, cause_idx]
+                X_test = effect_embedded[m, test_indices]
                 observations = cause[test_indices, cause_idx]
 
-                predictions = predict(X_lib, Y_lib, query_points)
-                all_preds.append(predictions)
-                all_obs.append(observations)
+                predictions = predict(X_train, Y_train, X_test)
+                all_predictions.append(predictions)
+                all_observations.append(observations)
 
-            pred_matrix = np.column_stack(all_preds)
-            obs_matrix = np.column_stack(all_obs)
-            score, _ = metric(pred_matrix, obs_matrix)
+            prediction_matrix = np.column_stack(all_predictions)
+            observation_matrix = np.column_stack(all_observations)
+            score = metric(prediction_matrix, observation_matrix)
             all_samples[i].append(score)
 
     return all_samples
@@ -310,8 +247,8 @@ def _fit_saturation(
         a, b_raw, c_raw = x
         b = np.exp(b_raw)
         c = np.exp(c_raw)
-        pred = a - b * np.exp(-c * L)
-        return sqrt_w * (scores - pred)
+        predicted = a - b * np.exp(-c * L)
+        return sqrt_w * (scores - predicted)
 
     result = least_squares(residual_fn, x0, method="lm", max_nfev=2000)
     a = result.x[0]
@@ -345,105 +282,42 @@ def _aicc(rss: float, n: int, k: int) -> float:
     return float(aic)
 
 
-def _compute_ccm_statistics(
-    cause: np.ndarray,
-    effect: np.ndarray,
-    lib_sizes: list[int],
-    *,
-    E: int,
-    tau: int,
-    num_samples: int,
-    predict: PredictFn,
-    metric: MetricFn,
-    rng: np.random.Generator,
-) -> _CCMSampleStats:
-    """Compute CCM sampling statistics.
-
-    Parameters
-    ----------
-    cause : np.ndarray of shape (T,) or (T, M)
-        Potential cause variable(s).
-    effect : np.ndarray of shape (T,) or (T, M)
-        Potential effect variable(s).
-    lib_sizes : list[int]
-        Library sizes to test.
-    E : int
-        Embedding dimension.
-    tau : int
-        Time delay.
-    num_samples : int
-        Number of random samples per library size.
-    predict : PredictFn
-        Prediction function.
-    metric : MetricFn
-        Metric function.
-    rng : np.random.Generator
-        Random number generator.
-
-    Returns
-    -------
-    _CCMSampleStats
-        Sampling statistics (lib_sizes, score_mean, score_var).
-    """
-    cause_2d = _ensure_2d(cause)
-    effect_2d = _ensure_2d(effect)
-
-    effect_embedded, cause_aligned = _prepare_ccm_embedding(effect_2d, cause_2d, tau, E)
-
-    all_samples = _sample_ccm_scores(
-        cause_aligned, effect_embedded, lib_sizes, num_samples, predict, metric, rng
-    )
-
-    score_mean, score_var = _compute_sample_statistics(all_samples)
-
-    return _CCMSampleStats(
-        lib_sizes=np.array(lib_sizes, dtype=float),
-        score_mean=score_mean,
-        score_var=score_var,
-    )
-
-
-def _fit_convergence_models(
-    stats: _CCMSampleStats,
+def _delta_aicc(
+    lib_sizes: np.ndarray,
+    score_mean: np.ndarray,
+    score_var: np.ndarray,
     *,
     eps_var: float = 1e-12,
-) -> _CCMModelFit | None:
-    """Fit convergence models and compute AICc.
+) -> float | None:
+    """Compute delta-AICc between linear and saturation models.
 
     Parameters
     ----------
-    stats : _CCMSampleStats
-        Sampling statistics.
+    lib_sizes : np.ndarray
+        Library sizes tested.
+    score_mean : np.ndarray
+        Mean score at each library size.
+    score_var : np.ndarray
+        Variance of scores at each library size.
     eps_var : float, optional
         Minimum variance floor for weights. Default is 1e-12.
 
     Returns
     -------
-    _CCMModelFit | None
-        Model fitting results, or None if fitting fails.
+    float | None
+        AICc_linear - AICc_saturation, or None if fitting fails.
+        Positive values favor the saturation model.
     """
-    weights = 1.0 / np.maximum(stats.score_var, eps_var)
+    weights = 1.0 / np.maximum(score_var, eps_var)
 
     try:
-        alpha, beta, rss_linear = _fit_linear(
-            stats.lib_sizes, stats.score_mean, weights
-        )
-        a, b, c, rss_sat = _fit_saturation(stats.lib_sizes, stats.score_mean, weights)
+        _, _, rss_linear = _fit_linear(lib_sizes, score_mean, weights)
+        _, _, _, rss_sat = _fit_saturation(lib_sizes, score_mean, weights)
     except (np.linalg.LinAlgError, RuntimeError, ValueError):
         return None
 
-    n = len(stats.lib_sizes)
-    aicc_linear = _aicc(rss_linear, n, k=2)
-    aicc_sat = _aicc(rss_sat, n, k=3)
-    delta_aicc = aicc_linear - aicc_sat
-
-    return _CCMModelFit(
-        aicc_saturation=aicc_sat,
-        aicc_linear=aicc_linear,
-        delta_aicc=delta_aicc,
-        saturation_params=(a, b, c),
-        linear_params=(alpha, beta),
-    )
+    n = len(lib_sizes)
+    return _aicc(rss_linear, n, k=2) - _aicc(rss_sat, n, k=3)
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +325,7 @@ def _fit_convergence_models(
 # ---------------------------------------------------------------------------
 
 
-def ccm_converged(
+def converged(
     cause: np.ndarray,
     effect: np.ndarray,
     lib_sizes: list[int],
@@ -464,14 +338,11 @@ def ccm_converged(
     aicc_threshold: float = 4.0,
     rng: np.random.Generator | None = None,
 ) -> bool:
-    """Test for CCM convergence (minimal interface).
+    """Test for CCM convergence.
 
     Compares a saturation model s(L) = a - b*exp(-c*L) against a linear model
     s(L) = alpha + beta*L via AICc. Returns True if saturation is favored
     (delta_aicc >= threshold).
-
-    For diagnostic information (scores, AICc values, fitted parameters),
-    use ``ccm_convergence_diagnostics()`` instead.
 
     Parameters
     ----------
@@ -488,7 +359,7 @@ def ccm_converged(
     num_samples : int, optional
         Number of random samples per library size. Default is 20.
     predict : PredictFn
-        Prediction function (X_lib, Y_lib, X_query) -> predictions.
+        Prediction function (X_train, Y_train, X_query) -> predictions.
     metric : MetricFn
         Metric function to evaluate predictions.
     aicc_threshold : float, optional
@@ -514,120 +385,23 @@ def ccm_converged(
     if rng is None:
         rng = np.random.default_rng()
 
-    stats = _compute_ccm_statistics(
-        cause,
-        effect,
-        lib_sizes,
-        E=E,
-        tau=tau,
-        num_samples=num_samples,
-        predict=predict,
-        metric=metric,
-        rng=rng,
-    )
+    cause_2d = _ensure_2d(cause)
+    effect_2d = _ensure_2d(effect)
+    effect_embedded, cause_aligned = _prepare_ccm_embedding(effect_2d, cause_2d, tau, E)
 
-    fit = _fit_convergence_models(stats)
-    if fit is None:
+    samples = _sample_ccm_scores(
+        cause_aligned, effect_embedded, lib_sizes, num_samples, predict, metric, rng
+    )
+    score_mean, score_var = _compute_sample_statistics(samples)
+
+    delta = _delta_aicc(np.array(lib_sizes, dtype=float), score_mean, score_var)
+    if delta is None:
         return False
 
-    return fit.delta_aicc >= aicc_threshold
+    return delta >= aicc_threshold
 
 
-def ccm_convergence_diagnostics(
-    cause: np.ndarray,
-    effect: np.ndarray,
-    lib_sizes: list[int],
-    *,
-    E: int = 2,
-    tau: int = 1,
-    num_samples: int = 20,
-    predict: PredictFn,
-    metric: MetricFn,
-    rng: np.random.Generator | None = None,
-) -> CCMDiagnostics:
-    """Compute CCM convergence diagnostics for visualization and analysis.
-
-    Use this function when you need detailed information about the convergence
-    test (e.g., for plotting convergence curves or analyzing model fits).
-    For simple convergence testing, use ``ccm_converged()`` instead.
-
-    Parameters
-    ----------
-    cause : np.ndarray of shape (T,) or (T, M)
-        Potential cause variable(s).
-    effect : np.ndarray of shape (T,) or (T, M)
-        Potential effect variable(s).
-    lib_sizes : list[int]
-        Library sizes to test (e.g., [10, 20, 50, 100]).
-    E : int, optional
-        Embedding dimension. Default is 2.
-    tau : int, optional
-        Time delay. Default is 1.
-    num_samples : int, optional
-        Number of random samples per library size. Default is 20.
-    predict : PredictFn
-        Prediction function (X_lib, Y_lib, X_query) -> predictions.
-    metric : MetricFn
-        Metric function to evaluate predictions.
-    rng : np.random.Generator | None, optional
-        Random number generator.
-
-    Returns
-    -------
-    CCMDiagnostics
-        Diagnostic information including scores, AICc values, and fitted params.
-
-    Raises
-    ------
-    ValueError
-        If lib_sizes is empty or contains non-positive values.
-    """
-    if not lib_sizes:
-        raise ValueError("lib_sizes cannot be empty")
-    if any(L <= 0 for L in lib_sizes):
-        raise ValueError(f"All lib_sizes must be positive, got {lib_sizes}")
-
-    if rng is None:
-        rng = np.random.default_rng()
-
-    stats = _compute_ccm_statistics(
-        cause,
-        effect,
-        lib_sizes,
-        E=E,
-        tau=tau,
-        num_samples=num_samples,
-        predict=predict,
-        metric=metric,
-        rng=rng,
-    )
-
-    fit = _fit_convergence_models(stats)
-    if fit is None:
-        return CCMDiagnostics(
-            lib_sizes=stats.lib_sizes,
-            score_mean=stats.score_mean,
-            score_var=stats.score_var,
-            aicc_saturation=np.inf,
-            aicc_linear=np.inf,
-            delta_aicc=0.0,
-            saturation_params=(0.0, 0.0, 0.0),
-            linear_params=(0.0, 0.0),
-        )
-
-    return CCMDiagnostics(
-        lib_sizes=stats.lib_sizes,
-        score_mean=stats.score_mean,
-        score_var=stats.score_var,
-        aicc_saturation=fit.aicc_saturation,
-        aicc_linear=fit.aicc_linear,
-        delta_aicc=fit.delta_aicc,
-        saturation_params=fit.saturation_params,
-        linear_params=fit.linear_params,
-    )
-
-
-def make_ccm_filter(
+def make_filter(
     target: np.ndarray,
     train_indices: np.ndarray,
     *,
@@ -641,7 +415,7 @@ def make_ccm_filter(
 ):
     """Create a candidate filter that checks CCM convergence.
 
-    Returns a filter function compatible with ``greedy_select(candidate_filter=...)``.
+    Returns a filter function compatible with ``greedy(candidate_filter=...)``.
     The filter tests whether adding a candidate variable shows convergent
     cross-mapping behavior.
 
@@ -668,19 +442,20 @@ def make_ccm_filter(
 
     Returns
     -------
-    CandidateFilter
+    Filter
         A filter function with signature
         ``(var_idx, X_train, Y_train, selected_indices) -> bool``.
 
     Examples
     --------
-    >>> from mde import greedy_select, make_ccm_filter, mean_rho
+    >>> from mde.ccm import make_filter
+    >>> from mde import greedy, mean_rho
     >>> from edmkit import simplex_projection
-    >>> ccm_filter = make_ccm_filter(
+    >>> ccm_filter = make_filter(
     ...     target, train_indices,
     ...     predict=simplex_projection, metric=mean_rho
     ... )
-    >>> selected, scores, _, _ = greedy_select(
+    >>> result = greedy(
     ...     candidates, target, train_indices, val_indices,
     ...     predict=simplex_projection, metric=mean_rho,
     ...     candidate_filter=ccm_filter,
@@ -708,7 +483,7 @@ def make_ccm_filter(
         """Check if candidate shows CCM convergence."""
         cause = X_train[:, var_idx : var_idx + 1]
 
-        return ccm_converged(
+        return converged(
             cause=cause,
             effect=Y_train_full,
             lib_sizes=lib_sizes,

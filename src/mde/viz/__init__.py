@@ -15,4 +15,4 @@ from .results import (
     plot_predictions,
     plot_predictions_multi,
 )
-from .types import MDEPlotData
+from .types import PlotData

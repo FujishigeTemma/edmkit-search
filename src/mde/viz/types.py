@@ -5,7 +5,7 @@ from typing import NamedTuple
 import numpy as np
 
 
-class MDEPlotData(NamedTuple):
+class PlotData(NamedTuple):
     """Pre-computed data for MDE result plots.
 
     Parameters
