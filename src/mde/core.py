@@ -4,10 +4,10 @@ from typing import NamedTuple
 
 import numpy as np
 
+from .dataset import Dataset, Fold, Subset, make_expanding_windows
 from .metrics import MetricFn
 from .search import Filter, Selection, greedy
 from .skill import PredictFn, _ensure_2d, prediction_skill
-from .splits import Split
 
 
 class Evaluation(NamedTuple):
@@ -30,24 +30,26 @@ class Result(NamedTuple):
 
     Parameters
     ----------
-    split : Split
-        The train/validation/test split used.
     selected_indices : list[int]
         Indices of selected variables (into candidates array).
     manifold : np.ndarray
-        The constructed manifold of shape (T, D) where D is the number of
-        selected dimensions.
+        The constructed manifold of shape (T, D).
+    train_indices : np.ndarray
+        All training indices.
+    val_indices : np.ndarray
+        Evaluated validation indices (fold.val concatenated).
+    train_scores : list[float]
+        Per-dimension scores from greedy search.
     val : Evaluation
-        Validation set evaluation results.
-    test : Evaluation
-        Test set evaluation results.
+        Expanding window validation results.
     """
 
-    split: Split
     selected_indices: list[int]
     manifold: np.ndarray
+    train_indices: np.ndarray
+    val_indices: np.ndarray
+    train_scores: list[float]
     val: Evaluation
-    test: Evaluation
 
 
 def get_predictions(
@@ -187,21 +189,24 @@ def evaluate_manifold(
     )
 
 
-def build_result(
+def evaluate_expanding(
     candidates: np.ndarray,
     target: np.ndarray,
-    split: Split,
-    selection: Selection,
+    selected_indices: list[int],
+    train_indices: np.ndarray,
+    val_indices: np.ndarray,
     *,
     predict: PredictFn,
     metric: MetricFn,
+    folds: list[Fold],
     store_predictions: bool = False,
-) -> Result:
-    """Build an MDE Result from a completed selection.
+) -> tuple[Evaluation, np.ndarray]:
+    """Expanding window validation.
 
-    This function evaluates the selected manifold on validation and test sets,
-    allowing any search strategy to be combined with the standard evaluation
-    pipeline.
+    For each fold:
+      library = train_indices + val_indices[fold.train]
+      query = val_indices[fold.val]
+      simplex_projection(library -> query)
 
     Parameters
     ----------
@@ -209,8 +214,98 @@ def build_result(
         Candidate variables.
     target : np.ndarray of shape (T,) or (T, M)
         Target variable(s).
-    split : Split
-        Pre-computed train/validation/test split.
+    selected_indices : list[int]
+        Indices of selected variables.
+    train_indices : np.ndarray
+        Full training indices.
+    val_indices : np.ndarray
+        Validation indices to split with folds.
+    predict : PredictFn
+        Prediction function.
+    metric : MetricFn
+        Metric function.
+    folds : list[Fold]
+        Expanding window folds (indices into val_indices).
+    store_predictions : bool, optional
+        Whether to store predictions. Default is False.
+
+    Returns
+    -------
+    evaluation : Evaluation
+        scores: per-dimension scores (fold average)
+        predictions: per-dimension predictions (fold concatenated)
+    query_indices : np.ndarray
+        Actually evaluated indices (fold.val concatenated).
+    """
+    if len(selected_indices) == 0:
+        return (
+            Evaluation(
+                scores=[],
+                predictions=[] if store_predictions else None,
+            ),
+            np.array([], dtype=int),
+        )
+
+    target_2d = _ensure_2d(target)
+
+    # Collect all query indices across folds
+    all_query_idx = np.concatenate([val_indices[fold.val] for fold in folds])
+
+    n_dims = len(selected_indices)
+    dim_scores: list[float] = []
+    dim_predictions: list[np.ndarray] | None = [] if store_predictions else None
+
+    for d in range(1, n_dims + 1):
+        fold_scores: list[float] = []
+        fold_preds: list[np.ndarray] = []
+
+        for fold in folds:
+            lib = np.concatenate([train_indices, val_indices[fold.train]])
+            query = val_indices[fold.val]
+
+            manifold = candidates[:, selected_indices[:d]]
+            score, preds = prediction_skill(
+                manifold,
+                target_2d,
+                lib,
+                query,
+                predict=predict,
+                metric=metric,
+            )
+            fold_scores.append(score)
+            fold_preds.append(preds)
+
+        dim_scores.append(float(np.mean(fold_scores)))
+        if dim_predictions is not None:
+            dim_predictions.append(np.concatenate(fold_preds, axis=0))
+
+    return (
+        Evaluation(scores=dim_scores, predictions=dim_predictions),
+        all_query_idx,
+    )
+
+
+def build_result(
+    dataset: Dataset,
+    train: Subset,
+    val: Subset,
+    selection: Selection,
+    *,
+    predict: PredictFn,
+    metric: MetricFn,
+    store_predictions: bool = False,
+    val_folds: list[Fold] | None = None,
+) -> Result:
+    """Build an MDE Result from a completed selection.
+
+    Parameters
+    ----------
+    dataset : Dataset
+        The full dataset.
+    train : Subset
+        Training subset.
+    val : Subset
+        Validation subset.
     selection : Selection
         Result of a search algorithm (e.g., ``greedy()``).
     predict : PredictFn
@@ -219,74 +314,65 @@ def build_result(
         Metric function.
     store_predictions : bool, optional
         Whether to store predictions. Default is False.
+    val_folds : list[Fold] | None, optional
+        Expanding window folds for validation. If None, auto-generated.
 
     Returns
     -------
     Result
-        Result containing split, selected_indices, manifold, val, and test.
     """
-    T = candidates.shape[0]
-    target_2d = _ensure_2d(target)
+    T = len(dataset)
 
     if len(selection.selected_indices) == 0:
         return Result(
-            split=split,
             selected_indices=[],
             manifold=np.array([]).reshape(T, 0),
+            train_indices=train.indices,
+            val_indices=np.array([], dtype=int),
+            train_scores=[],
             val=Evaluation(
-                scores=[],
-                predictions=[] if store_predictions else None,
-            ),
-            test=Evaluation(
                 scores=[],
                 predictions=[] if store_predictions else None,
             ),
         )
 
-    # Validation evaluation
-    val_result = Evaluation(
-        scores=selection.val_scores,
-        predictions=(
-            get_predictions(
-                candidates,
-                target_2d,
-                selection.selected_indices,
-                split.train,
-                split.val,
-                predict,
-            )
-            if store_predictions
-            else None
-        ),
-    )
+    # Default val folds: expanding window on val data
+    if val_folds is None:
+        val_folds = make_expanding_windows(
+            len(val),
+            min_train=0,
+            val_size=max(1, len(val) // 5),
+        )
 
-    # Test evaluation
-    test_result = evaluate_manifold(
-        candidates,
-        target_2d,
+    # Expanding window validation
+    val_eval, query_idx = evaluate_expanding(
+        dataset.X,
+        dataset.Y,
         selection.selected_indices,
-        split.train,
-        split.test,
+        train.indices,
+        val.indices,
         predict=predict,
         metric=metric,
+        folds=val_folds,
         store_predictions=store_predictions,
     )
 
-    final_manifold = candidates[:, selection.selected_indices]
+    final_manifold = dataset.X[:, selection.selected_indices]
 
     return Result(
-        split=split,
         selected_indices=selection.selected_indices,
         manifold=final_manifold,
-        val=val_result,
-        test=test_result,
+        train_indices=train.indices,
+        val_indices=query_idx,
+        train_scores=selection.scores,
+        val=val_eval,
     )
 
 
 def mde(
-    candidates: np.ndarray,
-    target: np.ndarray,
-    split: Split,
+    dataset: Dataset,
+    train: Subset,
+    val: Subset,
     *,
     predict: PredictFn,
     metric: MetricFn,
@@ -295,29 +381,26 @@ def mde(
     max_workers: int | None = None,
     candidate_filter: Filter | None = None,
     store_predictions: bool = False,
+    train_folds: list[Fold] | None = None,
+    val_folds: list[Fold] | None = None,
 ) -> Result:
     """Perform Manifold Dimension Expansion to discover causal relationships.
 
     MDE greedily selects variables that maximize the given metric on the
-    validation set. Supports both single-target and multi-target optimization.
+    training set. Then evaluates on validation with expanding windows.
 
     Parameters
     ----------
-    candidates : np.ndarray of shape (T, N)
-        Candidate variables where T is number of time points and N is number
-        of candidate variables.
-    target : np.ndarray of shape (T,) or (T, M)
-        Target variable(s). Shape (T,) for single-target or (T, M) for
-        multi-target where M is the number of target dimensions.
-    split : Split
-        Pre-computed train/validation/test split.
+    dataset : Dataset
+        The full dataset.
+    train : Subset
+        Training subset.
+    val : Subset
+        Validation subset.
     predict : PredictFn
         Prediction function (X_train, Y_train, X_query) -> predictions.
     metric : MetricFn
         Metric function for evaluating prediction quality.
-        Must return a scalar score. MDE maximizes this score,
-        so use ``negate()`` for metrics where lower is better
-        (e.g., RMSE, MAE).
     threshold : float, optional
         Minimum score for candidate selection. Default is 0.3.
     max_dim : int, optional
@@ -325,44 +408,41 @@ def mde(
     max_workers : int | None, optional
         Maximum number of worker threads. None uses os.cpu_count().
     candidate_filter : Filter | None, optional
-        Optional filter function to accept/reject candidates. Use
-        ``ccm.make_filter()`` for CCM convergence checking.
+        Optional filter function to accept/reject candidates.
     store_predictions : bool, optional
         Whether to store predictions for visualization. Default is False.
+    train_folds : list[Fold] | None, optional
+        Folds within training data for greedy search. If None, uses a
+        single 75/25 split.
+    val_folds : list[Fold] | None, optional
+        Expanding window folds for validation. If None, auto-generated.
 
     Returns
     -------
     Result
-        Result containing split, selected_indices, manifold, val, and test.
-
-    Raises
-    ------
-    ValueError
-        If candidates is not 2D, max_dim exceeds N, or shapes mismatch.
-
-    Examples
-    --------
-    >>> from mde import mde, mean_rho, temporal_split
-    >>> from edmkit import simplex_projection
-    >>> split = temporal_split(len(candidates), 0.6, 0.2, gap=50)
-    >>> result = mde(
-    ...     candidates, target, split,
-    ...     predict=simplex_projection, metric=mean_rho, threshold=0.3
-    ... )
-
-    Using custom metric (minimize RMSE):
-
-    >>> from mde import negate, rmse
-    >>> result = mde(
-    ...     candidates, target, split,
-    ...     predict=simplex_projection, metric=negate(rmse), threshold=-0.5
-    ... )
     """
+    # Train phase: greedy search
+    if train_folds is None:
+        # Default: single 75/25 split within train data
+        n_train = len(train)
+        split_point = int(n_train * 0.75)
+        train_folds = [
+            Fold(
+                train=np.arange(split_point),
+                val=np.arange(split_point, n_train),
+            )
+        ]
+
+    # Use the last fold for greedy search
+    fold = train_folds[-1]
+    search_lib = train.indices[fold.train]
+    search_eval = train.indices[fold.val]
+
     selection = greedy(
-        candidates,
-        _ensure_2d(target),
-        split.train,
-        split.val,
+        dataset.X,
+        _ensure_2d(dataset.Y),
+        search_lib,
+        search_eval,
         predict=predict,
         metric=metric,
         threshold=threshold,
@@ -372,11 +452,12 @@ def mde(
     )
 
     return build_result(
-        candidates,
-        target,
-        split,
+        dataset,
+        train,
+        val,
         selection,
         predict=predict,
         metric=metric,
         store_predictions=store_predictions,
+        val_folds=val_folds,
     )

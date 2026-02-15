@@ -61,12 +61,12 @@ class Selection(NamedTuple):
     ----------
     selected_indices : list[int]
         Indices of selected variables (into candidates array).
-    val_scores : list[float]
-        Validation score at each dimension step.
+    scores : list[float]
+        Score at each dimension step.
     """
 
     selected_indices: list[int]
-    val_scores: list[float]
+    scores: list[float]
 
 
 class _EvalArgs(NamedTuple):
@@ -282,7 +282,7 @@ def greedy(
     Returns
     -------
     Selection
-        Result containing selected_indices and val_scores.
+        Result containing selected_indices and scores.
 
     Raises
     ------
@@ -290,7 +290,7 @@ def greedy(
         If candidates is not 2D, max_dim exceeds N, or shapes mismatch.
     """
     selected_indices: list[int] = []
-    val_scores: list[float] = []
+    scores: list[float] = []
 
     for step in greedy_iter(
         candidates,
@@ -305,9 +305,9 @@ def greedy(
         candidate_filter=candidate_filter,
     ):
         selected_indices.append(step.var_idx)
-        val_scores.append(step.score)
+        scores.append(step.score)
 
     return Selection(
         selected_indices=selected_indices,
-        val_scores=val_scores,
+        scores=scores,
     )

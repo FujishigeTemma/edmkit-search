@@ -14,16 +14,16 @@ class PlotData(NamedTuple):
         Display label for the target variable(s).
     selected_var_names : list[str]
         Names of selected variables at each dimension step.
+    train_scores : list[float]
+        Mean training score at each dimension step.
     val_scores : list[float]
         Mean validation score at each dimension step.
-    test_scores : list[float]
-        Mean test score at each dimension step.
+    train_scores_per_target : list[np.ndarray]
+        Per-target training scores at each dimension step.
     val_scores_per_target : list[np.ndarray]
         Per-target validation scores at each dimension step.
-    test_scores_per_target : list[np.ndarray]
-        Per-target test scores at each dimension step.
     query_indices : np.ndarray
-        Indices used for the plotted split (val or test).
+        Indices used for the plotted split (validation).
     observations : np.ndarray
         Ground truth values at query_indices, shape (N,) or (N, M).
     predictions_per_dim : list[np.ndarray]
@@ -32,10 +32,10 @@ class PlotData(NamedTuple):
 
     target_label: str
     selected_var_names: list[str]
+    train_scores: list[float]
     val_scores: list[float]
-    test_scores: list[float]
+    train_scores_per_target: list[np.ndarray]
     val_scores_per_target: list[np.ndarray]
-    test_scores_per_target: list[np.ndarray]
     query_indices: np.ndarray
     observations: np.ndarray
     predictions_per_dim: list[np.ndarray]

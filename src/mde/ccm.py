@@ -464,16 +464,6 @@ def make_filter(
     if rng is None:
         rng = np.random.default_rng()
 
-    target_2d = _ensure_2d(target)
-    Y_train_full = target_2d[train_indices]
-    train_size = len(train_indices)
-
-    # Log-spaced library sizes for saturation detection
-    lib_sizes = np.unique(
-        np.geomspace(10, max(10, train_size * 0.8), num=8).astype(int)
-    ).tolist()
-    lib_sizes = [max(2, s) for s in lib_sizes]
-
     def ccm_filter(
         var_idx: int,
         X_train: np.ndarray,
@@ -482,10 +472,16 @@ def make_filter(
     ) -> bool:
         """Check if candidate shows CCM convergence."""
         cause = X_train[:, var_idx : var_idx + 1]
+        n = len(X_train)
+
+        lib_sizes = np.unique(
+            np.geomspace(10, max(10, n * 0.8), num=8).astype(int)
+        ).tolist()
+        lib_sizes = [max(2, s) for s in lib_sizes]
 
         return converged(
             cause=cause,
-            effect=Y_train_full,
+            effect=Y_train,
             lib_sizes=lib_sizes,
             E=E,
             tau=tau,

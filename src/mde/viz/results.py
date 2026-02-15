@@ -20,8 +20,8 @@ def plot_mde_results(mde_data: PlotData) -> Figure:
     -------
     Figure
     """
-    val_scores = mde_data.val_scores
-    test_scores = mde_data.test_scores
+    val_scores = mde_data.train_scores
+    test_scores = mde_data.val_scores
     selected_vars = mde_data.selected_var_names
 
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -35,7 +35,7 @@ def plot_mde_results(mde_data: PlotData) -> Figure:
         x,
         val_scores,
         "o-",
-        label="Validation",
+        label="Train",
         color="steelblue",
         linewidth=2,
         markersize=8,
@@ -44,7 +44,7 @@ def plot_mde_results(mde_data: PlotData) -> Figure:
         x,
         test_scores,
         "s--",
-        label="Test",
+        label="Validation",
         color="darkorange",
         linewidth=2,
         markersize=8,
@@ -72,7 +72,7 @@ def plot_mde_results(mde_data: PlotData) -> Figure:
 
     ax.set_xlabel("Dimension")
     ax.set_ylabel("Score")
-    ax.set_title(f"MDE: {mde_data.target_label} (Validation vs Test)")
+    ax.set_title(f"MDE: {mde_data.target_label} (Train vs Validation)")
     ax.set_xticks(x)
     ax.set_xticklabels(
         [f"D{i}\n({var})" for i, var in enumerate(selected_vars, 1)], fontsize=9
@@ -107,16 +107,25 @@ def plot_mde_results_multi(
     -------
     Figure
     """
+    train_scores = mde_data.train_scores
     val_scores = mde_data.val_scores
-    test_scores = mde_data.test_scores
+    train_scores_per_target = mde_data.train_scores_per_target
     val_scores_per_target = mde_data.val_scores_per_target
-    test_scores_per_target = mde_data.test_scores_per_target
     selected_vars = mde_data.selected_var_names
 
-    if len(val_scores) == 0:
+    if len(train_scores) == 0:
         return plt.figure()
 
-    M = len(val_scores_per_target[0])
+    # Determine M from whichever per-target list is available
+    has_train_per_target = len(train_scores_per_target) > 0
+    has_val_per_target = len(val_scores_per_target) > 0
+    if has_val_per_target:
+        M = len(val_scores_per_target[0])
+    elif has_train_per_target:
+        M = len(train_scores_per_target[0])
+    else:
+        M = 0
+
     if target_names is None:
         target_names = [f"Target_{m}" for m in range(M)]
 
@@ -124,51 +133,55 @@ def plot_mde_results_multi(
     fig, axes = plt.subplots(1, n_panels, figsize=(6 * n_panels, 5))
     if n_panels == 1:
         axes = [axes]
-    x = np.arange(1, len(val_scores) + 1)
+    x = np.arange(1, len(train_scores) + 1)
     x_labels = [f"D{i}\n({var})" for i, var in enumerate(selected_vars, 1)]
 
-    panels = [("Mean Score", val_scores, test_scores)]
+    panels: list[tuple[str, list, list]] = [("Mean Score", train_scores, val_scores)]
     for m, name in enumerate(target_names):
         panels.append(
             (
                 name,
-                [r[m] for r in val_scores_per_target],
-                [r[m] for r in test_scores_per_target],
+                [r[m] for r in train_scores_per_target] if has_train_per_target else [],
+                [r[m] for r in val_scores_per_target] if has_val_per_target else [],
             )
         )
 
-    for ax, (title, val, test) in zip(axes, panels):
-        ax.plot(
-            x,
-            val,
-            "o-",
-            label="Validation",
-            color="steelblue",
-            linewidth=2,
-            markersize=8,
-        )
-        ax.plot(
-            x, test, "s--", label="Test", color="darkorange", linewidth=2, markersize=8
-        )
-        for i, (v, t) in enumerate(zip(val, test)):
-            ax.annotate(
-                f"{v:.3f}",
-                xy=(x[i], v),
-                xytext=(0, 8),
-                textcoords="offset points",
-                ha="center",
-                fontsize=8,
+    for ax, (title, train, val) in zip(axes, panels):
+        if train:
+            ax.plot(
+                x,
+                train,
+                "o-",
+                label="Train",
                 color="steelblue",
+                linewidth=2,
+                markersize=8,
             )
-            ax.annotate(
-                f"{t:.3f}",
-                xy=(x[i], t),
-                xytext=(0, -12),
-                textcoords="offset points",
-                ha="center",
-                fontsize=8,
-                color="darkorange",
+        if val:
+            ax.plot(
+                x, val, "s--", label="Validation", color="darkorange", linewidth=2, markersize=8
             )
+        for i in range(len(x)):
+            if train and i < len(train):
+                ax.annotate(
+                    f"{train[i]:.3f}",
+                    xy=(x[i], train[i]),
+                    xytext=(0, 8),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8,
+                    color="steelblue",
+                )
+            if val and i < len(val):
+                ax.annotate(
+                    f"{val[i]:.3f}",
+                    xy=(x[i], val[i]),
+                    xytext=(0, -12),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=8,
+                    color="darkorange",
+                )
         ax.set_xlabel("Dimension")
         ax.set_ylabel("Score")
         ax.set_title(title)
@@ -177,7 +190,7 @@ def plot_mde_results_multi(
         ax.legend(loc="lower right", fontsize=9)
         ax.grid(True, alpha=0.3)
 
-    fig.suptitle(f"MDE: {mde_data.target_label} (Validation vs Test)", fontsize=14)
+    fig.suptitle(f"MDE: {mde_data.target_label} (Train vs Validation)", fontsize=14)
     fig.tight_layout()
     return fig
 
