@@ -1,28 +1,11 @@
-"""Evaluation metrics for MDE optimization.
-
-This module provides metric functions for evaluating prediction quality in MDE.
-
-Scalar functions (``rmse``, ``mae``, ``mean_rho``) return a single float and
-are the standard API. Per-dimension variants (``rmse_per_dim``, etc.) return
-a 1-D array of shape ``(M,)`` for per-target analysis and visualization.
-
-Convention: MDE maximizes the metric score, so use ``negate()`` for
-lower-is-better metrics (e.g., RMSE, MAE).
-"""
-
-from collections.abc import Callable
-from typing import NamedTuple, TypeAlias
+from typing import NamedTuple
 
 import numpy as np
 
-MetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], float]
-"""Metric function returning a scalar score."""
-
-PerDimMetricFn: TypeAlias = Callable[[np.ndarray, np.ndarray], np.ndarray]
-"""Metric function returning per-target scores of shape (M,)."""
+from .types import MetricFn
 
 
-class Config(NamedTuple):
+class MetricConfig(NamedTuple):
     """Configuration pairing a metric with a selection threshold.
 
     Parameters
@@ -72,9 +55,7 @@ def negate(metric: MetricFn) -> MetricFn:
 # ---------------------------------------------------------------------------
 
 
-def mean_rho_per_dim(
-    predictions: np.ndarray, observations: np.ndarray
-) -> np.ndarray:
+def mean_rho_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
     """Compute Pearson correlation coefficient per target.
 
     Parameters
@@ -97,9 +78,7 @@ def mean_rho_per_dim(
     return np.where(denom > 0, cov / denom, 0.0)
 
 
-def rmse_per_dim(
-    predictions: np.ndarray, observations: np.ndarray
-) -> np.ndarray:
+def rmse_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
     """Compute Root Mean Squared Error per target.
 
     Parameters
@@ -118,9 +97,7 @@ def rmse_per_dim(
     return np.sqrt(np.mean((predictions - observations) ** 2, axis=0))
 
 
-def mae_per_dim(
-    predictions: np.ndarray, observations: np.ndarray
-) -> np.ndarray:
+def mae_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
     """Compute Mean Absolute Error per target.
 
     Parameters

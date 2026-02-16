@@ -1,25 +1,28 @@
 # ruff: noqa: F401
-"""MDE (Manifold Dimension Expansion) for causal discovery."""
+"""MDE: greedy variable selection for Empirical Dynamic Modeling."""
 
-# Core algorithm
-from .core import mde, build_result, get_predictions, evaluate_manifold, evaluate_expanding
-
-# Search
+# Search (core algorithm)
 from .search import greedy, greedy_iter
 
-# Building blocks
-from .skill import prediction_skill
+# Convergence testing
+from .convergence import causation, causation_iter
 
 # Dataset
-from .dataset import Dataset, Subset, temporal_split, make_expanding_windows, make_sliding_windows
+from .dataset import (
+    Dataset,
+    Subset,
+    temporal_split,
+    expanding_splits,
+    sliding_splits,
+)
 
 # Metrics
 from .metrics import mae, mean_rho, negate, rmse
-from .metrics import mae_per_dim, mean_rho_per_dim, rmse_per_dim
 
-# Types
-from .core import Result, Evaluation
-from .search import Selection, Filter, Step
+# Types (callback interfaces)
+from .types import FilterFn, MetricFn, PredictFn
+
+# Types (data structures)
 from .dataset import Fold, Transform
-from .skill import PredictFn
-from .metrics import MetricFn, PerDimMetricFn
+from .metrics import MetricConfig
+from .search import Selection, Step
