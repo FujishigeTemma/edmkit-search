@@ -81,7 +81,6 @@ def causation_iter(
     L = Y_embedded.shape[0]
     library_pool = np.arange(L)
     prediction_pool = np.arange(L)
-    lib_sizes_arr = np.array(lib_sizes, dtype=int)
 
     def sampler(pool: np.ndarray, size: int) -> np.ndarray:
         return rng.choice(pool, size=size, replace=True)
@@ -94,7 +93,7 @@ def causation_iter(
         scores = ccm(
             Y_embedded,
             X_aligned,
-            lib_sizes_arr,
+            np.array(lib_sizes, dtype=int),
             predict_func=predict,
             n_samples=1,
             library_pool=library_pool,

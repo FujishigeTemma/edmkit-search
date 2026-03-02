@@ -180,10 +180,10 @@ Absolute tolerance (`a <= b + 1e-10`) fails when values are large — `1e-10` va
 
 ```python
 # Bad: fails for large values
-assert mae_val <= rmse_val + 1e-10
+assert mae <= rmse + 1e-10
 
 # Good: scales with magnitude
-assert mae_val <= rmse_val * (1 + 1e-10) + 1e-10
+assert mae <= rmse * (1 + 1e-10) + 1e-10
 ```
 
 ### Very large values

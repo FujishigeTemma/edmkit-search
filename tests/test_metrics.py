@@ -4,6 +4,8 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from mde.metrics import (
+    PER_DIM_METRICS,
+    SCALAR_METRICS,
     mae,
     mae_per_dim,
     mean_rho,
@@ -13,16 +15,9 @@ from mde.metrics import (
 )
 from tests.strategies import arrays_2d, matched_arrays, reasonable_floats
 
-ALL_PER_DIM = [mean_rho_per_dim, rmse_per_dim, mae_per_dim]
 ERROR_PER_DIM = [rmse_per_dim, mae_per_dim]
-ALL_SCALAR = [mean_rho, rmse, mae]
 ERROR_SCALAR = [rmse, mae]
-ALL_METRICS = ALL_SCALAR + ALL_PER_DIM
-
-
-# ===========================================================================
-# Per-dimension metrics
-# ===========================================================================
+ALL_METRICS = SCALAR_METRICS + PER_DIM_METRICS
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +54,7 @@ def test_1d_input_raises(metric, n):
 # 3. Invariant (structural) — per-dim output shape
 # ---------------------------------------------------------------------------
 @given(data=matched_arrays())
-@pytest.mark.parametrize("metric", ALL_PER_DIM, ids=lambda m: m.__name__)
+@pytest.mark.parametrize("metric", PER_DIM_METRICS, ids=lambda m: m.__name__)
 def test_per_dim_output_shape(metric, data):
     """Per-dim metrics return shape (M,)."""
     predictions, observations = data
@@ -160,16 +155,11 @@ def test_error_per_dim_scale_equivariant(metric, data, a):
     )
 
 
-# ===========================================================================
-# Scalar metrics
-# ===========================================================================
-
-
 # ---------------------------------------------------------------------------
 # 10. Scalar output type
 # ---------------------------------------------------------------------------
 @given(data=matched_arrays())
-@pytest.mark.parametrize("metric", ALL_SCALAR, ids=lambda m: m.__name__)
+@pytest.mark.parametrize("metric", SCALAR_METRICS, ids=lambda m: m.__name__)
 def test_scalar_returns_float(metric, data):
     """Scalar metrics return a Python float."""
     predictions, observations = data

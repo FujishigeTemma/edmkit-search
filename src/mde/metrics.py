@@ -1,26 +1,9 @@
-from typing import NamedTuple
-
 import numpy as np
 
 from .types import MetricFn
 
 
-class MetricConfig(NamedTuple):
-    """Configuration pairing a metric with a selection threshold.
-
-    Parameters
-    ----------
-    metric : MetricFn
-        Metric function.
-    threshold : float
-        Minimum score for candidate selection.
-    """
-
-    metric: MetricFn
-    threshold: float
-
-
-def _validate(predictions: np.ndarray, observations: np.ndarray) -> None:
+def validate(predictions: np.ndarray, observations: np.ndarray) -> None:
     """Validate inputs common to all metric functions."""
     if predictions.shape != observations.shape:
         raise ValueError(
@@ -47,78 +30,8 @@ def negate(metric: MetricFn) -> MetricFn:
     def negated(predictions: np.ndarray, observations: np.ndarray) -> float:
         return -metric(predictions, observations)
 
+    negated.__name__ = f"negate({metric.__name__})"
     return negated
-
-
-# ---------------------------------------------------------------------------
-# Per-dimension metrics (return shape (M,))
-# ---------------------------------------------------------------------------
-
-
-def mean_rho_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    """Compute Pearson correlation coefficient per target.
-
-    Parameters
-    ----------
-    predictions : np.ndarray of shape (N, M)
-        Predicted values where N is number of samples and M is number of targets.
-    observations : np.ndarray of shape (N, M)
-        Observed (ground truth) values.
-
-    Returns
-    -------
-    per_target : np.ndarray of shape (M,)
-        Correlation for each target.
-    """
-    _validate(predictions, observations)
-    predictions_c = predictions - predictions.mean(axis=0)
-    observations_c = observations - observations.mean(axis=0)
-    cov = (predictions_c * observations_c).sum(axis=0)
-    denom = np.sqrt((predictions_c**2).sum(axis=0) * (observations_c**2).sum(axis=0))
-    return np.where(denom > 0, cov / denom, 0.0)
-
-
-def rmse_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    """Compute Root Mean Squared Error per target.
-
-    Parameters
-    ----------
-    predictions : np.ndarray of shape (N, M)
-        Predicted values where N is number of samples and M is number of targets.
-    observations : np.ndarray of shape (N, M)
-        Observed (ground truth) values.
-
-    Returns
-    -------
-    per_target : np.ndarray of shape (M,)
-        RMSE for each target.
-    """
-    _validate(predictions, observations)
-    return np.sqrt(np.mean((predictions - observations) ** 2, axis=0))
-
-
-def mae_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    """Compute Mean Absolute Error per target.
-
-    Parameters
-    ----------
-    predictions : np.ndarray of shape (N, M)
-        Predicted values where N is number of samples and M is number of targets.
-    observations : np.ndarray of shape (N, M)
-        Observed (ground truth) values.
-
-    Returns
-    -------
-    per_target : np.ndarray of shape (M,)
-        MAE for each target.
-    """
-    _validate(predictions, observations)
-    return np.mean(np.abs(predictions - observations), axis=0)
-
-
-# ---------------------------------------------------------------------------
-# Scalar metrics (standard API, return float)
-# ---------------------------------------------------------------------------
 
 
 def mean_rho(predictions: np.ndarray, observations: np.ndarray) -> float:
@@ -154,7 +67,7 @@ def rmse(predictions: np.ndarray, observations: np.ndarray) -> float:
     float
         RMSE across all elements.
     """
-    _validate(predictions, observations)
+    validate(predictions, observations)
     return float(np.sqrt(np.mean((predictions - observations) ** 2)))
 
 
@@ -173,5 +86,72 @@ def mae(predictions: np.ndarray, observations: np.ndarray) -> float:
     float
         MAE across all elements.
     """
-    _validate(predictions, observations)
+    validate(predictions, observations)
     return float(np.mean(np.abs(predictions - observations)))
+
+
+SCALAR_METRICS: tuple[MetricFn, ...] = (mean_rho, rmse, mae)
+
+
+def mean_rho_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    """Compute Pearson correlation coefficient per target.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    per_target : np.ndarray of shape (M,)
+        Correlation for each target.
+    """
+    validate(predictions, observations)
+    predictions_c = predictions - predictions.mean(axis=0)
+    observations_c = observations - observations.mean(axis=0)
+    cov = (predictions_c * observations_c).sum(axis=0)
+    denom = np.sqrt((predictions_c**2).sum(axis=0) * (observations_c**2).sum(axis=0))
+    return np.where(denom > 0, cov / denom, 0.0)
+
+
+def rmse_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    """Compute Root Mean Squared Error per target.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    per_target : np.ndarray of shape (M,)
+        RMSE for each target.
+    """
+    validate(predictions, observations)
+    return np.sqrt(np.mean((predictions - observations) ** 2, axis=0))
+
+
+def mae_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    """Compute Mean Absolute Error per target.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N, M)
+        Predicted values where N is number of samples and M is number of targets.
+    observations : np.ndarray of shape (N, M)
+        Observed (ground truth) values.
+
+    Returns
+    -------
+    per_target : np.ndarray of shape (M,)
+        MAE for each target.
+    """
+    validate(predictions, observations)
+    return np.mean(np.abs(predictions - observations), axis=0)
+
+
+PER_DIM_METRICS = (mean_rho_per_dim, rmse_per_dim, mae_per_dim)
