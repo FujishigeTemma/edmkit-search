@@ -13,6 +13,7 @@ dependencies = [
     "line-profiler>=5.0.0",
     "matplotlib>=3.10.8",
     "opentelemetry-api==1.39.1",
+    "opentelemetry-exporter-otlp-proto-http==1.39.1",
     "opentelemetry-sdk==1.39.1",
     "polars>=1.37.1",
     "scipy>=1.15.1",
