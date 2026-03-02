@@ -148,10 +148,8 @@ def greedy_iter(
 
         best = None
         for candidate in candidates:
-            if filter is not None:
-                x = X_train[:, candidate.index]
-                if not filter(x, Y_train):
-                    continue
+            if filter is not None and not filter(X_train[:, candidate.index], Y_train):
+                continue
             best = candidate
             break
 
