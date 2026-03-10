@@ -1,5 +1,5 @@
 # ruff: noqa: F401
-from .convergence import causation, causation_iter
+from .convergence import causation
 from .dataset import (
     Dataset,
     Fold,

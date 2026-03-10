@@ -1,6 +1,4 @@
-import os
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from typing import NamedTuple
 
@@ -65,7 +63,6 @@ def greedy_iter(
     metric: MetricFn,
     threshold: float = 0.0,
     max_dim: int = 10,
-    max_workers: int | None = None,
     filter: FilterFn | None = None,
 ) -> Iterator[Step]:
     """Greedily select variables that maximize prediction skill (generator version).
@@ -87,8 +84,6 @@ def greedy_iter(
         Minimum score for candidate selection. Default is 0.0.
     max_dim : int
         Maximum number of variables to select. Default is 10.
-    max_workers : int | None
-        Maximum number of worker threads. None uses ``os.cpu_count()``.
     filter : FilterFn | None
         Optional filter ``(x, Y) -> bool`` to accept/reject candidates.
         Called on the best candidate each iteration; if rejected, tries next best.
@@ -116,9 +111,6 @@ def greedy_iter(
     if max_dim > N:
         raise ValueError(f"max_dim must be <= N (={N}), got {max_dim}")
 
-    if max_workers is None:
-        max_workers = os.cpu_count() or 1
-
     available_indices = list(range(N))
     selected_indices: list[int] = []
 
@@ -134,11 +126,7 @@ def greedy_iter(
             predict=predict,
         )
 
-        if max_workers > 1 and len(available_indices) > 1:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                results = list(executor.map(eval, available_indices))
-        else:
-            results = [eval(v) for v in available_indices]
+        results = [eval(v) for v in available_indices]
 
         candidates = sorted(
             (r for r in results if r.score >= threshold),
@@ -185,7 +173,6 @@ def greedy(
     metric: MetricFn,
     threshold: float = 0.0,
     max_dim: int = 10,
-    max_workers: int | None = None,
     filter: FilterFn | None = None,
 ) -> Selection:
     """Greedily select variables that maximize prediction skill.
@@ -204,8 +191,6 @@ def greedy(
         Minimum score for candidate selection. Default is 0.0.
     max_dim : int
         Maximum number of variables to select. Default is 10.
-    max_workers : int | None
-        Maximum number of worker threads. None uses ``os.cpu_count()``.
     filter : FilterFn | None
         Optional filter ``(x, Y) -> bool`` to accept/reject candidates.
 
@@ -224,7 +209,6 @@ def greedy(
         metric=metric,
         threshold=threshold,
         max_dim=max_dim,
-        max_workers=max_workers,
         filter=filter,
     ):
         indices.append(step.index)
