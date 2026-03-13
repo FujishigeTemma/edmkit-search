@@ -1,5 +1,5 @@
 import numpy as np
-from edmkit.ccm import ccm_samples
+from edmkit.ccm import bootstrap
 from edmkit.embedding import lagged_embed
 
 from .aicc import delta_aicc
@@ -98,7 +98,7 @@ def causation(
     def sampler(pool: np.ndarray, size: int) -> np.ndarray:
         return rng.choice(pool, size=size, replace=True)
 
-    samples = ccm_samples(
+    samples = bootstrap(
         Y_embedded,
         X_aligned,
         np.array(lib_sizes, dtype=int),

@@ -10,4 +10,8 @@ wheels/
 .venv
 
 # Hypothesis
-.hypothesis/
+.hypothesis/*
+!.hypothesis/examples/
+
+# otel
+otel.db
