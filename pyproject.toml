@@ -17,17 +17,12 @@ dependencies = [
     "opentelemetry-sdk==1.39.1",
     "polars>=1.37.1",
     "scipy>=1.15.1",
+    "tqdm>=4.67.3",
 ]
 
 [dependency-groups]
-dev = [
-    "hypothesis>=6.151.5",
-    "pytest>=9.0.2",
-    "ruff>=0.14.14",
-    "ty>=0.0.13",
-]
+dev = ["hypothesis>=6.151.5", "pytest>=9.0.2", "ruff>=0.14.14", "ty>=0.0.13"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-x --tb=short"
-
