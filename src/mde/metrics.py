@@ -113,7 +113,10 @@ def mean_rho_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.nd
     observations_c = observations - observations.mean(axis=0)
     cov = (predictions_c * observations_c).sum(axis=0)
     denom = np.sqrt((predictions_c**2).sum(axis=0) * (observations_c**2).sum(axis=0))
-    return np.where(denom > 0, cov / denom, 0.0)
+    result = np.zeros_like(cov)
+    mask = denom > 0
+    np.divide(cov, denom, out=result, where=mask)
+    return result
 
 
 def rmse_per_dim(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:

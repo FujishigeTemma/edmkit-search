@@ -1,0 +1,32 @@
+# ruff: noqa: F401
+from collections.abc import Iterable
+
+from .annealing import ScheduleFn, anneal, geometric_cooling
+from .beam import beam
+from .greedy import greedy
+from .types import Selection, Step
+
+
+def collect(steps: Iterable[Step]) -> Selection:
+    """Collect Steps into a Selection.
+
+    Takes indices from the last Step's ``selected`` field,
+    scores from each Step's ``score``.
+
+    Parameters
+    ----------
+    steps : Iterable[Step]
+        Steps from any search algorithm.
+
+    Returns
+    -------
+    Selection
+        Aggregated result.
+    """
+    steps_list = list(steps)
+    if not steps_list:
+        return Selection(indices=[], scores=[])
+    return Selection(
+        indices=list(steps_list[-1].selected),
+        scores=[s.score for s in steps_list],
+    )

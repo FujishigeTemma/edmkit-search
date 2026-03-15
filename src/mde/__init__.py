@@ -10,5 +10,5 @@ from .dataset import (
     temporal_split,
 )
 from .metrics import mae, mean_rho, negate, rmse
-from .search import Selection, Step, greedy, greedy_iter
+from .search import ScheduleFn, Selection, Step, anneal, beam, collect, greedy
 from .types import FilterFn, MetricFn, PredictFn
