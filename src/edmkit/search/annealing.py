@@ -4,8 +4,8 @@ from typing import Callable
 
 import numpy as np
 
-from mde.dataset import Dataset, Subset
-from mde.types import FilterFn, MetricFn, PredictFn
+from .dataset import Dataset, Subset
+from .types import FilterFn, MetricFn, PredictFn
 
 from .common import prepare_data, score_subset
 from .types import Step

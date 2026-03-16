@@ -5,19 +5,21 @@ code in this repository.
 
 ## Project Overview
 
-**mde** is a Python library for Multidimensional Embedding (MDE) analysis — a
-causal inference and variable selection toolkit built on Empirical Dynamic
-Modeling (EDM). It provides greedy variable selection, convergent cross-mapping
-(CCM) convergence testing via AICc model comparison, time-series dataset
-management, and prediction metrics.
+**edmkit-search** (namespace `edmkit.search`) is a Python library for
+variable selection and causal inference built on Empirical Dynamic Modeling
+(EDM). It provides greedy/beam/annealing variable selection, convergent
+cross-mapping (CCM) convergence testing via AICc model comparison, time-series
+dataset management, and prediction metrics.
 
 Core dependency: `edmkit` (external EDM library providing `ccm.bootstrap`,
-`embedding.lagged_embed`, etc.)
+`embedding.lagged_embed`, etc.). Both packages use `uv_build` with
+`namespace = true` so `edmkit.search` and `edmkit.ccm` etc. coexist as
+namespace packages under the `edmkit` root.
 
 ## Commands
 
 ```bash
-# Install dependencies (uses uv, hatchling build backend)
+# Install dependencies (uses uv, uv_build backend)
 uv sync --dev
 
 # Run all tests (pytest with hypothesis, defaults to "dev" profile: 10 examples)
@@ -47,18 +49,24 @@ uv run python e2e/fly.py
 ### Module layers (dependency flows downward)
 
 ```
-convergence.py  ← CCM convergence test (uses aicc + edmkit)
-search.py       ← Greedy variable selection (uses dataset + metrics + types)
-aicc.py         ← AICc model comparison (linear vs saturation curve fitting)
-metrics.py      ← Prediction metrics (mean_rho, rmse, mae; scalar + per_dim)
-dataset/        ← Data containers, splits, transforms, DataLoader
-  containers.py ← Dataset, Subset (Subset is a zero-copy view)
-  splits.py     ← temporal_split, expanding_splits, sliding_splits → Fold
-  transforms.py ← Transform type alias, zscore_normalize, gaussian_noise, compose
-  loader.py     ← DataLoader (mini-batch iterator)
-data/           ← Data loaders (fly.py uses polars, lorenz96.py is a simulator)
-types.py        ← Protocol types: PredictFn, MetricFn, FilterFn
+src/edmkit/search/
+  convergence.py  ← CCM convergence test (uses aicc + edmkit)
+  greedy.py       ← Greedy variable selection
+  beam.py         ← Beam search variable selection
+  annealing.py    ← Simulated annealing variable selection
+  common.py       ← Shared helpers (prepare_data, score_subset)
+  aicc.py         ← AICc model comparison (linear vs saturation curve fitting)
+  metrics.py      ← Prediction metrics (mean_rho, rmse, mae; scalar + per_dim)
+  types.py        ← Protocol types (PredictFn, MetricFn, FilterFn) + Step, Selection
+  dataset/        ← Data containers, splits, transforms, DataLoader
+    containers.py ← Dataset, Subset (Subset is a zero-copy view)
+    splits.py     ← temporal_split, expanding_splits, sliding_splits → Fold
+    transforms.py ← Transform type alias, zscore_normalize, gaussian_noise, compose
+    loader.py     ← DataLoader (mini-batch iterator)
+  data/           ← Data loaders (fly.py uses polars, lorenz96.py is a simulator)
 ```
+
+No `__init__.py` in `src/edmkit/` (namespace root). Subpackages keep theirs.
 
 Keep module boundaries sharp: each module has a single responsibility as shown
 above. Treat `experiments/` as analysis code and generated output, not package
@@ -70,9 +78,9 @@ API. `e2e/` contains end-to-end smoke tests using real datasets.
   `FilterFn` protocols (not string flags or enums). Use `functools.partial` to
   bind parameters.
 - **Dataset/Subset interchangeability**: `Subset` exposes `.X`/`.Y` properties
-  matching `Dataset`, so both work with `greedy_iter` and `greedy`.
-- **Greedy search**: `greedy_iter` is the generator core; `greedy` is the
-  convenience wrapper that collects all steps.
+  matching `Dataset`, so both work with search functions.
+- **Search algorithms**: `greedy`, `beam`, `anneal` are generators yielding
+  `Step` objects; `collect()` aggregates into `Selection`.
 - **CCM convergence** (`convergence.causation`): Embeds Y (effect), predicts X
   (cause) via bootstrap sampling, then compares linear vs saturation AICc to
   detect convergence.

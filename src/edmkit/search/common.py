@@ -1,7 +1,7 @@
 import numpy as np
 
-from mde.dataset import Dataset, Subset
-from mde.types import MetricFn, PredictFn
+from .dataset import Dataset, Subset
+from .types import MetricFn, PredictFn
 
 
 def prepare_data(

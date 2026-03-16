@@ -3,7 +3,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from mde.metrics import (
+from edmkit.search.metrics import (
     PER_DIM_METRICS,
     SCALAR_METRICS,
     mae,

@@ -2,28 +2,36 @@
 
 ## Project Overview
 
-`mde` is a Python library for Multidimensional Embedding analysis: greedy
-variable selection, CCM convergence testing, AICc-based model comparison,
-dataset management, and prediction metrics for EDM workflows. The main external
-dependency is `edmkit`, which provides core EDM primitives such as bootstrap CCM
-and lagged embedding.
+`edmkit-search` (namespace `edmkit.search`) is a Python library for variable
+selection and causal inference: greedy/beam/annealing variable selection, CCM
+convergence testing, AICc-based model comparison, dataset management, and
+prediction metrics for EDM workflows. The main external dependency is `edmkit`,
+which provides core EDM primitives such as bootstrap CCM and lagged embedding.
+Both packages use `uv_build` with `namespace = true` to coexist under the
+`edmkit` namespace root.
 
 ## Project Structure
 
 Keep module boundaries sharp and dependencies flowing downward:
 
 ```text
-convergence.py  <- CCM convergence tests using aicc + edmkit
-search.py       <- greedy variable selection using dataset + metrics + types
-aicc.py         <- linear vs saturation model comparison
-metrics.py      <- scalar and per-dimension prediction metrics
-dataset/        <- Dataset, Subset, splits, transforms, DataLoader
-data/           <- dataset-specific loaders and simulators
-types.py        <- protocol types such as PredictFn, MetricFn, FilterFn
-tests/          <- pytest + hypothesis coverage
-e2e/fly.py      <- main integration smoke path against data/fly.csv
-experiments/    <- exploratory analysis and generated output, not package API
+src/edmkit/search/
+  convergence.py  <- CCM convergence tests using aicc + edmkit
+  greedy.py       <- greedy variable selection
+  beam.py         <- beam search variable selection
+  annealing.py    <- simulated annealing variable selection
+  common.py       <- shared helpers (prepare_data, score_subset)
+  aicc.py         <- linear vs saturation model comparison
+  metrics.py      <- scalar and per-dimension prediction metrics
+  types.py        <- protocol types (PredictFn, MetricFn, FilterFn) + Step, Selection
+  dataset/        <- Dataset, Subset, splits, transforms, DataLoader
+  data/           <- dataset-specific loaders and simulators
+tests/            <- pytest + hypothesis coverage
+e2e/fly.py        <- main integration smoke path against data/fly.csv
+experiments/      <- exploratory analysis and generated output, not package API
 ```
+
+No `__init__.py` in `src/edmkit/` (namespace root). Subpackages keep theirs.
 
 Prefer extending the existing layer where the responsibility already fits
 instead of introducing cross-cutting helpers.
@@ -77,8 +85,8 @@ Pytest and Hypothesis are the primary test tools.
 
 ## Change Guidance
 
-- Keep library code in `src/mde/`; avoid turning `experiments/` code into
-  implicit package API.
+- Keep library code in `src/edmkit/search/`; avoid turning `experiments/` code
+  into implicit package API.
 - Preserve `Dataset` and `Subset` interchangeability and other protocol-based
   seams when refactoring.
 - When behavior changes, describe the impact clearly and record the verification

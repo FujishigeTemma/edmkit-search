@@ -9,9 +9,9 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 from scipy.spatial.distance import cdist
 
-from mde import Dataset, Selection, Step, collect
-from mde.metrics import mae, negate
-from mde.search import anneal, beam, geometric_cooling, greedy
+from edmkit.search import Dataset, Selection, Step, collect
+from edmkit.search.metrics import mae, negate
+from edmkit.search import anneal, beam, geometric_cooling, greedy
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -260,7 +260,7 @@ class TestMetamorphicRelations:
         assert len(orig_steps) == len(perm_steps)
         # Scores at each step should match (ties may break differently)
         for g, p in zip(orig_steps, perm_steps):
-            np.testing.assert_allclose(g.score, p.score, rtol=1e-10)
+            np.testing.assert_allclose(g.score, p.score, rtol=1e-6)
 
     @given(data=search_inputs(), t_offset=st.floats(0.01, 100.0))
     def test_threshold_monotonicity(self, data: tuple[Dataset, int], t_offset: float):

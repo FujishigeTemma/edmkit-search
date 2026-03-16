@@ -3,8 +3,19 @@ from collections.abc import Iterable
 
 from .annealing import ScheduleFn, anneal, geometric_cooling
 from .beam import beam
+from .convergence import causation
+from .dataset import (
+    Dataset,
+    Fold,
+    Subset,
+    Transform,
+    expanding_splits,
+    sliding_splits,
+    temporal_split,
+)
 from .greedy import greedy
-from .types import Selection, Step
+from .metrics import mae, mean_rho, negate, rmse
+from .types import FilterFn, MetricFn, PredictFn, Selection, Step
 
 
 def collect(steps: Iterable[Step]) -> Selection:
