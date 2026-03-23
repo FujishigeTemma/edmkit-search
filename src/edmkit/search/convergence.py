@@ -2,7 +2,6 @@ import numpy as np
 from edmkit.ccm import bootstrap
 from edmkit.embedding import lagged_embed
 
-from .aicc import delta_aicc
 from .types import PredictFn
 
 
@@ -15,16 +14,16 @@ def causation(
     E: int,
     tau: int,
     n_samples: int = 20,
-    aicc_threshold: float = 4.0,
+    slope_threshold: float = 0.002,
     rng: np.random.Generator | None = None,
 ) -> bool:
-    """Test for CCM convergence using AICc model comparison.
+    """Test for CCM convergence using slope of ρ vs library size.
 
-    Calls :func:`edmkit.ccm.ccm_samples` once with ``n_samples`` to obtain
-    per-sample correlations, then compares a saturation model against a linear
-    model using AICc.  Returns ``True`` if the saturation model is favored
-    (delta_aicc >= threshold), indicating convergent cross-mapping and thus
-    causal influence from X on Y.
+    Embeds Y (effect), predicts X (cause) via bootstrap CCM at multiple
+    library sizes, then fits a linear regression of mean ρ against
+    normalized library size.  Returns ``True`` if the slope exceeds the
+    threshold, indicating that prediction skill increases with library
+    size — the hallmark of convergent cross-mapping.
 
     Parameters
     ----------
@@ -33,7 +32,7 @@ def causation(
     Y : np.ndarray of shape (T,) or (T, M)
         Potential effect variable(s).
     lib_sizes : list[int]
-        Library sizes to test (e.g. [10, 20, 50, 100]).
+        Library sizes to test (e.g. [100, 200, 500, 1000, 2000, 5000]).
     predict : PredictFn
         Prediction function ``(X_train, Y_train, X_query) -> predictions``.
     E : int
@@ -42,15 +41,16 @@ def causation(
         Time delay for embedding.
     n_samples : int
         Number of bootstrap samples to collect. Default is 20.
-    aicc_threshold : float
-        Minimum delta_aicc to declare convergence. Default is 4.0.
+    slope_threshold : float
+        Minimum slope of mean ρ vs normalized library size to declare
+        convergence.  Default is 0.002 (matches MDE/dimx).
     rng : np.random.Generator or None
         Random number generator.
 
     Returns
     -------
     bool
-        True if convergence is detected (saturation model is favored).
+        True if convergence is detected (slope >= threshold).
 
     Raises
     ------
@@ -109,11 +109,16 @@ def causation(
         sampler=sampler,
     )  # (n_samples, len(lib_sizes))
 
-    means = samples.mean(axis=0)
-    variances = samples.var(axis=0, ddof=1)
+    means = samples.mean(axis=0)  # (len(lib_sizes),)
 
-    delta = delta_aicc(np.array(lib_sizes, dtype=float), means, variances)
-    if delta is None:
+    # Slope of mean ρ vs normalized library size via OLS
+    x = np.array(lib_sizes, dtype=float)
+    x = x / x.max()  # normalize to [0, 1]
+    x_c = x - x.mean()
+    y_c = means - means.mean()
+    denom = x_c @ x_c
+    if denom == 0:
         return False
+    slope = float(x_c @ y_c / denom)
 
-    return delta >= aicc_threshold
+    return slope >= slope_threshold
