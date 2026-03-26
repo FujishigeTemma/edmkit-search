@@ -9,9 +9,10 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 from scipy.spatial.distance import cdist
 
+from edmkit.metrics import mae
 from edmkit.search import Dataset, Selection, Step, collect
-from edmkit.search.metrics import mae, negate
 from edmkit.search import anneal, beam, geometric_cooling, greedy
+from edmkit.search.common import negate
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -33,21 +34,19 @@ def make_dataset(
 
 
 def dummy_predict(
-    X_train: np.ndarray,
-    Y_train: np.ndarray,
-    X_query: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Q: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Predict by nearest-neighbor (1-NN) for testing."""
-    # Simple 1-NN: for each query point, find nearest training point
-    dists = cdist(X_query, X_train)
+    dists = cdist(Q, X)
     nearest = np.argmin(dists, axis=1)
-    return Y_train[nearest]
+    return Y[nearest]
 
 
-dummy_predict.__name__ = "dummy_predict"
-
-
-def mean_abs_corr(predictions: np.ndarray, observations: np.ndarray) -> float:
+def mean_abs_corr(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
     """Mean absolute correlation across dimensions."""
     M = predictions.shape[1]
     total = 0.0
@@ -57,10 +56,7 @@ def mean_abs_corr(predictions: np.ndarray, observations: np.ndarray) -> float:
         if p.std() < 1e-12 or o.std() < 1e-12:
             continue
         total += abs(float(np.corrcoef(p, o)[0, 1]))
-    return total / max(M, 1)
-
-
-mean_abs_corr.__name__ = "mean_abs_corr"
+    return np.asarray(total / max(M, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +65,14 @@ mean_abs_corr.__name__ = "mean_abs_corr"
 
 
 def colsum_predict(
-    X_train: np.ndarray,
-    Y_train: np.ndarray,
-    X_query: np.ndarray,
+    X: np.ndarray,
+    Y: np.ndarray,
+    Q: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Cheap predict: column sum of query, repeated across Y dims."""
-    return X_query.sum(axis=1, keepdims=True).repeat(Y_train.shape[1], axis=1)
+    return Q.sum(axis=1, keepdims=True).repeat(Y.shape[1], axis=1)
 
 
 neg_mae = negate(mae)

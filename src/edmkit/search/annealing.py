@@ -3,12 +3,12 @@ from functools import partial
 from typing import Callable
 
 import numpy as np
-
-from .dataset import Dataset, Subset
-from .types import FilterFn, MetricFn, PredictFn
+from edmkit.metrics import MetricFunc
+from edmkit.types import PredictFunc
 
 from .common import prepare_data, score_subset
-from .types import Step
+from .dataset import Dataset, Subset
+from .types import FilterFn, Step
 
 ScheduleFn = Callable[[int, int], float]
 """Temperature schedule: (step, n_steps) -> temperature."""
@@ -118,8 +118,8 @@ def anneal(
     train: Dataset | Subset,
     validation: Dataset | Subset,
     *,
-    predict: PredictFn,
-    metric: MetricFn,
+    predict: PredictFunc,
+    metric: MetricFunc,
     n_steps: int = 1000,
     max_dim: int = 10,
     schedule: ScheduleFn | None = None,
@@ -138,9 +138,9 @@ def anneal(
         Training data. Only ``.X`` and ``.Y`` are accessed.
     validation : Dataset | Subset
         Validation data for evaluating candidates.
-    predict : PredictFn
-        Prediction function ``(X_train, Y_train, X_query) -> predictions``.
-    metric : MetricFn
+    predict : PredictFunc
+        Prediction function ``(X, Y, Q, *, mask) -> predictions``.
+    metric : MetricFunc
         Metric function for evaluating prediction quality.
     n_steps : int
         Number of SA iterations. Default is 1000.

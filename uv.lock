@@ -127,7 +127,7 @@ wheels = [
 
 [[package]]
 name = "edmkit"
-version = "0.0.3"
+version = "0.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -135,9 +135,9 @@ dependencies = [
     { name = "tinygrad" },
     { name = "usearch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/a5/5eb0832e1d76afb7f361e15d32786c69c09f3f27271201c466d808c0dcb4/edmkit-0.0.3.tar.gz", hash = "sha256:26f7c132ed79655ba62748a313fbecdb5a2b0687359f7e76a497f40445027134", size = 10630, upload-time = "2026-03-16T02:32:59.602Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/22/4ed117b8fe315ea05fa7a50c13d35f1fe1e442c5ebfa8ba01aaf96195cd6/edmkit-0.0.4.tar.gz", hash = "sha256:2b540acf382cf373336ce9912a3a4efbcb3b92634c9db292730640be383d0133", size = 14583, upload-time = "2026-03-26T03:34:44.03Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/0e/63488fe352025bb02b09176133390a4667dccc8fc99f2e5b7574ab202828/edmkit-0.0.3-py3-none-any.whl", hash = "sha256:8c15322b78703c5c79b99894fcb435838aab68eb91b6ebcebe3e4f2b0b138663", size = 14650, upload-time = "2026-03-16T02:33:00.554Z" },
+    { url = "https://files.pythonhosted.org/packages/cc/7f/197d752c7b0248edf7eca1d4755b9341d32d092764cddecf295c9f28453e/edmkit-0.0.4-py3-none-any.whl", hash = "sha256:bb88c030e6f29ed5251da6ab5d94ea23bf968b09169c7d70d4eeeff5c0072e28", size = 19807, upload-time = "2026-03-26T03:34:42.997Z" },
 ]
 
 [[package]]
@@ -166,7 +166,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "edmkit", specifier = "==0.0.3" },
+    { name = "edmkit", specifier = "==0.0.4" },
     { name = "line-profiler", specifier = ">=5.0.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },

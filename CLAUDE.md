@@ -8,13 +8,13 @@ code in this repository.
 **edmkit-search** (namespace `edmkit.search`) is a Python library for
 variable selection and causal inference built on Empirical Dynamic Modeling
 (EDM). It provides greedy/beam/annealing variable selection, convergent
-cross-mapping (CCM) convergence testing via AICc model comparison, time-series
-dataset management, and prediction metrics.
+cross-mapping (CCM) convergence testing via AICc model comparison, and
+time-series dataset management.
 
-Core dependency: `edmkit` (external EDM library providing `ccm.bootstrap`,
-`embedding.lagged_embed`, etc.). Both packages use `uv_build` with
-`namespace = true` so `edmkit.search` and `edmkit.ccm` etc. coexist as
-namespace packages under the `edmkit` root.
+Core dependency: `edmkit>=0.0.4` (external EDM library providing
+`ccm.bootstrap`, `embedding.lagged_embed`, `metrics`, `splits`, `types`,
+etc.). Both packages use `uv_build` with `namespace = true` so `edmkit.search`
+and `edmkit.ccm` etc. coexist as namespace packages under the `edmkit` root.
 
 ## Commands
 
@@ -27,8 +27,8 @@ uv sync --dev
 uv run pytest
 
 # Run a single test file or test
-uv run pytest tests/test_metrics.py
-uv run pytest tests/test_metrics.py::test_self_correlation_per_dim
+uv run pytest tests/test_search.py
+uv run pytest tests/test_search.py::TestGreedy
 
 # Hypothesis profiles: dev (default, fast), ci (500 examples), debug (verbose)
 uv run pytest --hypothesis-profile=ci
@@ -54,13 +54,11 @@ src/edmkit/search/
   greedy.py       ← Greedy variable selection
   beam.py         ← Beam search variable selection
   annealing.py    ← Simulated annealing variable selection
-  common.py       ← Shared helpers (prepare_data, score_subset)
+  common.py       ← Shared helpers (prepare_data, score_subset, negate)
   aicc.py         ← AICc model comparison (linear vs saturation curve fitting)
-  metrics.py      ← Prediction metrics (mean_rho, rmse, mae; scalar + per_dim)
-  types.py        ← Protocol types (PredictFn, MetricFn, FilterFn) + Step, Selection
-  dataset/        ← Data containers, splits, transforms, DataLoader
+  types.py        ← FilterFn protocol + Step, Selection NamedTuples
+  dataset/        ← Data containers, transforms, DataLoader
     containers.py ← Dataset, Subset (Subset is a zero-copy view)
-    splits.py     ← temporal_split, expanding_splits, sliding_splits → Fold
     transforms.py ← Transform type alias, zscore_normalize, gaussian_noise, compose
     loader.py     ← DataLoader (mini-batch iterator)
   data/           ← Data loaders (fly.py uses polars, lorenz96.py is a simulator)
@@ -74,9 +72,9 @@ API. `e2e/` contains end-to-end smoke tests using real datasets.
 
 ### Key patterns
 
-- **Protocol-based DI**: Core behavior is injected via `PredictFn`, `MetricFn`,
-  `FilterFn` protocols (not string flags or enums). Use `functools.partial` to
-  bind parameters.
+- **Protocol-based DI**: Core behavior is injected via `PredictFunc` (edmkit),
+  `MetricFunc` (edmkit), `FilterFn` (search-specific) protocols. Use
+  `functools.partial` to bind parameters.
 - **Dataset/Subset interchangeability**: `Subset` exposes `.X`/`.Y` properties
   matching `Dataset`, so both work with search functions.
 - **Search algorithms**: `greedy`, `beam`, `anneal` are generators yielding

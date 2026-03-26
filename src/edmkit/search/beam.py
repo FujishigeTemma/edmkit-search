@@ -1,18 +1,19 @@
 from collections.abc import Iterator
 
-from .dataset import Dataset, Subset
-from .types import FilterFn, MetricFn, PredictFn
+from edmkit.metrics import MetricFunc
+from edmkit.types import PredictFunc
 
 from .common import prepare_data, score_subset
-from .types import Step
+from .dataset import Dataset, Subset
+from .types import FilterFn, Step
 
 
 def beam(
     train: Dataset | Subset,
     validation: Dataset | Subset,
     *,
-    predict: PredictFn,
-    metric: MetricFn,
+    predict: PredictFunc,
+    metric: MetricFunc,
     threshold: float = 0.0,
     max_dim: int = 10,
     beam_width: int = 3,
@@ -29,9 +30,9 @@ def beam(
         Training data. Only ``.X`` and ``.Y`` are accessed.
     validation : Dataset | Subset
         Validation data for evaluating candidates.
-    predict : PredictFn
-        Prediction function ``(X_train, Y_train, X_query) -> predictions``.
-    metric : MetricFn
+    predict : PredictFunc
+        Prediction function ``(X, Y, Q, *, mask) -> predictions``.
+    metric : MetricFunc
         Metric function for evaluating prediction quality.
     threshold : float
         Minimum score for candidate selection. Default is 0.0.

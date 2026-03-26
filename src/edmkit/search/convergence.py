@@ -2,7 +2,7 @@ import numpy as np
 from edmkit.ccm import bootstrap
 from edmkit.embedding import lagged_embed
 
-from .types import PredictFn
+from edmkit.types import PredictFunc
 
 
 def causation(
@@ -10,7 +10,7 @@ def causation(
     Y: np.ndarray,
     lib_sizes: list[int],
     *,
-    predict: PredictFn,
+    predict: PredictFunc,
     E: int,
     tau: int,
     n_samples: int = 20,
@@ -33,8 +33,8 @@ def causation(
         Potential effect variable(s).
     lib_sizes : list[int]
         Library sizes to test (e.g. [100, 200, 500, 1000, 2000, 5000]).
-    predict : PredictFn
-        Prediction function ``(X_train, Y_train, X_query) -> predictions``.
+    predict : PredictFunc
+        Prediction function ``(X, Y, Q, *, mask) -> predictions``.
     E : int
         Embedding dimension.
     tau : int
@@ -106,7 +106,7 @@ def causation(
         n_samples=n_samples,
         library_pool=library_pool,
         prediction_pool=prediction_pool,
-        sampler=sampler,
+        sample_func=sampler,
     )  # (n_samples, len(lib_sizes))
 
     means = samples.mean(axis=0)  # (len(lib_sizes),)

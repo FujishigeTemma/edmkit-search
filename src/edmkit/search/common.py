@@ -1,7 +1,29 @@
 import numpy as np
+from edmkit.metrics import MetricFunc
+from edmkit.types import PredictFunc
 
 from .dataset import Dataset, Subset
-from .types import MetricFn, PredictFn
+
+
+def negate(metric: MetricFunc) -> MetricFunc:
+    """Negate a metric function for use with lower-is-better metrics.
+
+    Parameters
+    ----------
+    metric : MetricFunc
+        A metric function returning a score.
+
+    Returns
+    -------
+    MetricFunc
+        A new metric function that returns the negated score.
+    """
+
+    def negated(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+        return -metric(predictions, observations)
+
+    negated.__name__ = f"negate({getattr(metric, '__name__', repr(metric))})"
+    return negated
 
 
 def prepare_data(
@@ -56,8 +78,8 @@ def score_subset(
     X_validation: np.ndarray,
     Y_train: np.ndarray,
     Y_validation: np.ndarray,
-    predict: PredictFn,
-    metric: MetricFn,
+    predict: PredictFunc,
+    metric: MetricFunc,
 ) -> float:
     """Score a variable subset: predict then metric.
 
@@ -73,9 +95,9 @@ def score_subset(
         Training targets.
     Y_validation : np.ndarray of shape (N', D)
         Validation targets.
-    predict : PredictFn
+    predict : PredictFunc
         Prediction function.
-    metric : MetricFn
+    metric : MetricFunc
         Metric function.
 
     Returns
@@ -87,4 +109,4 @@ def score_subset(
     if predictions.ndim == 1:
         predictions = predictions[:, None]
 
-    return metric(predictions, Y_validation)
+    return float(metric(predictions, Y_validation))
