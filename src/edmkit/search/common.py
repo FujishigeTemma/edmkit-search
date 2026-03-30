@@ -1,5 +1,6 @@
 import numpy as np
 from edmkit.metrics import MetricFunc
+from edmkit.splits import Fold
 from edmkit.types import PredictFunc
 
 from .dataset import Dataset, Subset
@@ -110,3 +111,48 @@ def score_subset(
         predictions = predictions[:, None]
 
     return float(metric(predictions, Y_validation))
+
+
+def score_subset_per_fold(
+    indices: list[int],
+    *,
+    folds: list[Fold],
+    X: np.ndarray,
+    Y: np.ndarray,
+    predict: PredictFunc,
+    metric: MetricFunc,
+) -> np.ndarray:
+    """Score a variable subset on each fold independently.
+
+    Parameters
+    ----------
+    indices : list[int]
+        Column indices to use from X.
+    folds : list[Fold]
+        Temporal folds, each with ``.train`` and ``.validation`` index arrays.
+    X : np.ndarray of shape (T, M)
+        Full feature array (2D, already validated by caller).
+    Y : np.ndarray of shape (T, D)
+        Full target array (2D, already promoted by caller).
+    predict : PredictFunc
+        Prediction function.
+    metric : MetricFunc
+        Metric function.
+
+    Returns
+    -------
+    np.ndarray of shape (n_folds,)
+        Score for each fold.
+    """
+    scores = np.empty(len(folds))
+    for k, fold in enumerate(folds):
+        scores[k] = score_subset(
+            indices,
+            X_train=X[fold.train],
+            X_validation=X[fold.validation],
+            Y_train=Y[fold.train],
+            Y_validation=Y[fold.validation],
+            predict=predict,
+            metric=metric,
+        )
+    return scores

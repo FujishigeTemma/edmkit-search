@@ -9,10 +9,14 @@ from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 from scipy.spatial.distance import cdist
 
+from functools import partial
+
 from edmkit.metrics import mae
 from edmkit.search import Dataset, Selection, Step, collect
 from edmkit.search import anneal, beam, geometric_cooling, greedy
-from edmkit.search.common import negate
+from edmkit.search import greedy_complementary, softmax_weight
+from edmkit.search.common import negate, score_subset, score_subset_per_fold
+from edmkit.splits import Fold, sliding_folds, temporal_fold
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -145,6 +149,21 @@ def run(algo: str, ds: Dataset, max_dim: int) -> list[Step]:
                 rng=np.random.default_rng(0),
             )
         )
+    elif algo == "complementary":
+        T = ds.X.shape[0]
+        ts = max(T // 3, 1)
+        vs = max(T // 3, 1)
+        split = partial(sliding_folds, train_size=ts, validation_size=vs)
+        return list(
+            greedy_complementary(
+                ds,
+                predict=colsum_predict,
+                metric=neg_mae,
+                split=split,
+                max_dim=max_dim,
+                threshold=-float("inf"),
+            )
+        )
     raise ValueError(algo)
 
 
@@ -152,7 +171,7 @@ class TestStructuralInvariants:
     """Property-based tests for invariants that hold across all algorithms."""
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_index_is_last_selected(self, algo: str, data: tuple[Dataset, int]):
         """step.index == step.selected[-1] for all algorithms."""
         ds, max_dim = data
@@ -160,7 +179,7 @@ class TestStructuralInvariants:
             assert step.index == step.selected[-1]
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_no_duplicate_indices(self, algo: str, data: tuple[Dataset, int]):
         """No duplicate indices in step.selected."""
         ds, max_dim = data
@@ -168,7 +187,7 @@ class TestStructuralInvariants:
             assert len(step.selected) == len(set(step.selected))
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_indices_in_range(self, algo: str, data: tuple[Dataset, int]):
         """All indices in [0, M)."""
         ds, max_dim = data
@@ -178,7 +197,7 @@ class TestStructuralInvariants:
                 assert 0 <= idx < M
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_selected_within_max_dim(self, algo: str, data: tuple[Dataset, int]):
         """len(step.selected) <= max_dim."""
         ds, max_dim = data
@@ -186,7 +205,7 @@ class TestStructuralInvariants:
             assert len(step.selected) <= max_dim
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_score_is_finite(self, algo: str, data: tuple[Dataset, int]):
         """step.score is finite."""
         ds, max_dim = data
@@ -194,7 +213,7 @@ class TestStructuralInvariants:
             assert math.isfinite(step.score)
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_selected_grows_by_one(self, algo: str, data: tuple[Dataset, int]):
         """len(selected) grows by exactly 1 per step (greedy/beam only)."""
         ds, max_dim = data
@@ -204,7 +223,7 @@ class TestStructuralInvariants:
             prev_len = len(step.selected)
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_collect_invariants(self, algo: str, data: tuple[Dataset, int]):
         """collect() length consistency and indices match last step."""
         ds, max_dim = data
@@ -358,7 +377,7 @@ class TestValidationPBT:
         M=st.integers(1, 8),
         excess=st.integers(1, 10),
     )
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
     def test_max_dim_exceeds_M(self, algo: str, M: int, excess: int):
         """max_dim > M raises ValueError for all algorithms."""
         ds = make_dataset(M=M)
@@ -801,3 +820,260 @@ class TestGeometricCooling:
             geometric_cooling(T_end=-1.0)
         with pytest.raises(ValueError, match="T_start must be > T_end"):
             geometric_cooling(T_start=0.1, T_end=1.0)
+
+
+# ---------------------------------------------------------------------------
+# 7. score_subset_per_fold tests
+# ---------------------------------------------------------------------------
+
+
+class TestScoreSubsetPerFold:
+    def test_shape(self):
+        """Returns array of shape (n_folds,)."""
+        ds = make_dataset(N=50, M=5)
+        folds = sliding_folds(50, train_size=15, validation_size=10)
+        scores = score_subset_per_fold(
+            [0, 1],
+            folds=folds,
+            X=ds.X,
+            Y=ds.Y,
+            predict=dummy_predict,
+            metric=mean_abs_corr,
+        )
+        assert scores.shape == (len(folds),)
+
+    def test_single_fold_matches_score_subset(self):
+        """With one fold, result matches score_subset."""
+        ds = make_dataset(N=50, M=5)
+        fold = temporal_fold(50, 0.6)
+        indices = [0, 2]
+
+        per_fold = score_subset_per_fold(
+            indices,
+            folds=[fold],
+            X=ds.X,
+            Y=ds.Y if ds.Y.ndim == 2 else ds.Y[:, None],
+            predict=dummy_predict,
+            metric=mean_abs_corr,
+        )
+        single = score_subset(
+            indices,
+            X_train=ds.X[fold.train],
+            X_validation=ds.X[fold.validation],
+            Y_train=ds.Y[fold.train] if ds.Y.ndim == 2 else ds.Y[fold.train, None],
+            Y_validation=ds.Y[fold.validation]
+            if ds.Y.ndim == 2
+            else ds.Y[fold.validation, None],
+            predict=dummy_predict,
+            metric=mean_abs_corr,
+        )
+        np.testing.assert_allclose(per_fold[0], single, rtol=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# 8. Weight function tests
+# ---------------------------------------------------------------------------
+
+
+class TestSoftmaxWeight:
+    def test_uniform_at_equal_scores(self):
+        """Equal fold scores produce uniform weights."""
+        fn = softmax_weight(temperature=1.0)
+        scores = np.array([0.5, 0.5, 0.5])
+        prev = np.zeros(3)
+        w = fn(scores, prev, np.full(3, 1.0 / 3))
+        np.testing.assert_allclose(w, np.full(3, 1.0 / 3), rtol=1e-10)
+
+    def test_sums_to_one(self):
+        """Weights sum to 1."""
+        fn = softmax_weight(temperature=2.0)
+        scores = np.array([0.1, 0.5, 0.9])
+        w = fn(scores, np.zeros(3), np.full(3, 1.0 / 3))
+        np.testing.assert_allclose(w.sum(), 1.0, rtol=1e-10)
+
+    def test_low_temperature_concentrates(self):
+        """Low temperature concentrates weight on worst fold."""
+        fn = softmax_weight(temperature=0.01)
+        scores = np.array([0.8, 0.1, 0.5])
+        w = fn(scores, np.zeros(3), np.full(3, 1.0 / 3))
+        assert w[1] > 0.99  # fold 1 has lowest score
+
+    def test_invalid_temperature(self):
+        """Non-positive temperature raises ValueError."""
+        with pytest.raises(ValueError, match="temperature"):
+            softmax_weight(temperature=0.0)
+        with pytest.raises(ValueError, match="temperature"):
+            softmax_weight(temperature=-1.0)
+
+
+# ---------------------------------------------------------------------------
+# 9. Greedy complementary tests
+# ---------------------------------------------------------------------------
+
+
+def _make_split(n: int) -> list[Fold]:
+    """Create a simple sliding fold split for tests."""
+    ts = max(n // 3, 2)
+    vs = max(n // 3, 2)
+    folds = sliding_folds(n, train_size=ts, validation_size=vs)
+    if not folds:
+        # Fallback for very small n: single fold
+        mid = n // 2
+        folds = [Fold(np.arange(0, max(mid, 1)), np.arange(max(mid, 1), n))]
+    return folds
+
+
+class TestGreedyComplementary:
+    def test_basic_operation(self):
+        """Yields at least one step with low threshold."""
+        ds = make_dataset()
+        steps = list(
+            greedy_complementary(
+                ds,
+                predict=dummy_predict,
+                metric=mean_abs_corr,
+                split=_make_split,
+                max_dim=3,
+                threshold=-float("inf"),
+            )
+        )
+        assert len(steps) >= 1
+        assert len(steps) <= 3
+
+    def test_threshold_filters(self):
+        """High threshold stops selection early."""
+        ds = make_dataset()
+        steps = list(
+            greedy_complementary(
+                ds,
+                predict=dummy_predict,
+                metric=mean_abs_corr,
+                split=_make_split,
+                max_dim=5,
+                threshold=999.0,
+            )
+        )
+        assert len(steps) == 0
+
+    def test_filter_rejects_all(self):
+        """Filter that rejects everything yields no steps."""
+        ds = make_dataset()
+
+        def reject_all(x: np.ndarray, Y: np.ndarray) -> bool:
+            return False
+
+        steps = list(
+            greedy_complementary(
+                ds,
+                predict=dummy_predict,
+                metric=mean_abs_corr,
+                split=_make_split,
+                max_dim=3,
+                filter=reject_all,
+            )
+        )
+        assert len(steps) == 0
+
+    def test_max_dim_validation(self):
+        """max_dim > N raises ValueError."""
+        ds = make_dataset(M=3)
+        with pytest.raises(ValueError, match="max_dim"):
+            list(
+                greedy_complementary(
+                    ds,
+                    predict=dummy_predict,
+                    metric=mean_abs_corr,
+                    split=_make_split,
+                    max_dim=10,
+                )
+            )
+
+    def test_empty_split_raises(self):
+        """Split producing no folds raises ValueError."""
+        ds = make_dataset()
+
+        def empty_split(n: int) -> list[Fold]:
+            return []
+
+        with pytest.raises(ValueError, match="no folds"):
+            list(
+                greedy_complementary(
+                    ds,
+                    predict=dummy_predict,
+                    metric=mean_abs_corr,
+                    split=empty_split,
+                    max_dim=3,
+                )
+            )
+
+    def test_no_duplicate_indices(self):
+        """Never selects the same variable twice."""
+        ds = make_dataset()
+        steps = list(
+            greedy_complementary(
+                ds,
+                predict=dummy_predict,
+                metric=mean_abs_corr,
+                split=_make_split,
+                max_dim=5,
+                threshold=-float("inf"),
+            )
+        )
+        indices = [s.index for s in steps]
+        assert len(indices) == len(set(indices))
+
+    def test_single_fold_equals_greedy(self):
+        """With a single fold, complementary matches greedy."""
+        ds = make_dataset(N=50, M=4, seed=99)
+        fold = temporal_fold(50, 0.6)
+
+        from edmkit.search.dataset import Subset
+
+        train = Subset(ds, fold.train)
+        validation = Subset(ds, fold.validation)
+
+        greedy_steps = list(
+            greedy(
+                train,
+                validation,
+                predict=colsum_predict,
+                metric=neg_mae,
+                max_dim=3,
+                threshold=-float("inf"),
+            )
+        )
+
+        def single_fold_split(n: int) -> list[Fold]:
+            return [fold]
+
+        comp_steps = list(
+            greedy_complementary(
+                ds,
+                predict=colsum_predict,
+                metric=neg_mae,
+                split=single_fold_split,
+                max_dim=3,
+                threshold=-float("inf"),
+            )
+        )
+
+        assert len(greedy_steps) == len(comp_steps)
+        for g, c in zip(greedy_steps, comp_steps):
+            assert g.index == c.index
+            np.testing.assert_allclose(g.score, c.score, rtol=1e-10)
+
+    def test_softmax_weight_func(self):
+        """Works with explicit softmax_weight strategy."""
+        ds = make_dataset()
+        steps = list(
+            greedy_complementary(
+                ds,
+                predict=dummy_predict,
+                metric=mean_abs_corr,
+                split=_make_split,
+                weight=softmax_weight(temperature=0.1),
+                max_dim=3,
+                threshold=-float("inf"),
+            )
+        )
+        assert len(steps) >= 1

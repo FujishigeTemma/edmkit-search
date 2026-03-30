@@ -1,6 +1,5 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from functools import partial
-from typing import Callable
 
 import numpy as np
 from edmkit.metrics import MetricFunc
