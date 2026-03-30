@@ -3,7 +3,7 @@ from collections.abc import Iterable
 
 from .annealing import ScheduleFn, anneal, geometric_cooling
 from .beam import beam
-from .convergence import causation
+from .convergence import causation, make_ccm_filter
 from .dataset import Dataset, Subset, Transform
 from .greedy import greedy
 from .types import FilterFn, Selection, Step

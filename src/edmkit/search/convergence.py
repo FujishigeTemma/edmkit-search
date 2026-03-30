@@ -1,8 +1,13 @@
+import hashlib
+import threading
+
 import numpy as np
 from edmkit.ccm import bootstrap
-from edmkit.embedding import lagged_embed
+from edmkit.embedding import lagged_embed, scan, select
 
 from edmkit.types import PredictFunc
+
+from .types import FilterFn
 
 
 def causation(
@@ -122,3 +127,90 @@ def causation(
     slope = float(x_c @ y_c / denom)
 
     return slope >= slope_threshold
+
+
+def make_ccm_filter(
+    *,
+    predict: PredictFunc,
+    E: list[int],
+    tau: list[int],
+    lib_sizes: list[int],
+    n_samples: int = 20,
+    slope_threshold: float = 0.002,
+    rho_min: float = 0.0,
+    seed: int = 0,
+) -> FilterFn:
+    """Create a CCM convergence filter with dynamic E/tau estimation.
+
+    Two-layer filtering:
+
+    1. Run ``scan`` + ``select`` to find the best (E, tau) for the
+       candidate variable.  If the mean score is below ``rho_min``, the
+       variable is rejected immediately (no detectable dynamics).
+    2. Run ``causation`` with the selected (E, tau) to test for CCM
+       convergence.
+
+    Results are cached per column (thread-safe) so repeated calls with
+    the same ``x`` array are free.
+
+    Parameters
+    ----------
+    predict : PredictFunc
+        Prediction function for both scan and CCM.
+    E : list[int]
+        Embedding dimension candidates.
+    tau : list[int]
+        Time delay candidates.
+    lib_sizes : list[int]
+        Library sizes for CCM convergence testing.
+    n_samples : int
+        Bootstrap samples for convergence test.
+    slope_threshold : float
+        Minimum slope to declare convergence (passed to ``causation``).
+    rho_min : float
+        Minimum mean score from ``select`` to proceed with CCM.
+        Set to 0.0 (default) to disable early rejection.
+    seed : int
+        Base seed for deterministic per-column RNG.
+
+    Returns
+    -------
+    FilterFn
+        Filter function ``(x, Y) -> bool``.
+    """
+    cache: dict[bytes, bool] = {}
+    lock = threading.Lock()
+
+    def ccm_filter(x: np.ndarray, Y: np.ndarray) -> bool:
+        key = x.tobytes()
+        with lock:
+            if key in cache:
+                return cache[key]
+
+        scores = scan(x, E=E, tau=tau, predict=predict)
+        best_E, best_tau, best_score = select(scores, E=E, tau=tau)
+
+        if best_score < rho_min:
+            with lock:
+                cache[key] = False
+            return False
+
+        col_hash = int.from_bytes(hashlib.sha256(key).digest()[:8], "little")
+        rng = np.random.default_rng([seed, col_hash])
+        result = causation(
+            x,
+            Y,
+            lib_sizes,
+            predict=predict,
+            E=best_E,
+            tau=best_tau,
+            n_samples=n_samples,
+            slope_threshold=slope_threshold,
+            rng=rng,
+        )
+
+        with lock:
+            cache[key] = result
+        return result
+
+    return ccm_filter

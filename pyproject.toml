@@ -9,13 +9,15 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "edmkit==0.0.4",
+    "dimx>=1.1.1",
+    "edmkit==0.0.5",
     "line-profiler>=5.0.0",
     "matplotlib>=3.10.8",
     "opentelemetry-api==1.39.1",
     "opentelemetry-exporter-otlp-proto-http==1.39.1",
     "opentelemetry-sdk==1.39.1",
     "polars>=1.37.1",
+    "pyarrow>=23.0.1",
     "scipy>=1.15.1",
     "tqdm>=4.67.3",
 ]
