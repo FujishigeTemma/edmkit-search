@@ -11,6 +11,16 @@ class FilterFn(Protocol):
     def __call__(self, x: np.ndarray, Y: np.ndarray) -> bool: ...
 
 
+class SampleLossFn(Protocol):
+    """(predictions, observations) -> per-sample loss."""
+
+    __name__: str
+
+    def __call__(
+        self, predictions: np.ndarray, observations: np.ndarray
+    ) -> np.ndarray: ...
+
+
 class Step(NamedTuple):
     """Result of a single variable selection step.
 

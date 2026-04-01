@@ -5,13 +5,16 @@ from .annealing import ScheduleFn, anneal, geometric_cooling
 from .beam import beam
 from .complementary import (
     WeightFunc,
-    greedy_complementary,
+    greedy_complementary_folds,
+    greedy_complementary_timepoints,
+    mean_abs_error_per_sample,
+    softmax_loss_weight,
     softmax_weight,
 )
 from .convergence import causation, make_ccm_filter
 from .dataset import Dataset, Subset, Transform
 from .greedy import greedy
-from .types import FilterFn, Selection, Step
+from .types import FilterFn, SampleLossFn, Selection, Step
 
 
 def collect(steps: Iterable[Step]) -> Selection:
