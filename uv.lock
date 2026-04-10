@@ -154,16 +154,29 @@ wheels = [
 [[package]]
 name = "edmkit"
 version = "0.0.5"
-source = { registry = "https://pypi.org/simple" }
+source = { directory = "../edmkit" }
 dependencies = [
     { name = "numpy" },
     { name = "scipy" },
     { name = "tinygrad" },
     { name = "usearch" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/62/82/d202a7518774906dcfe1de6bae0eba1b4abb23d95a4fb119a037f7aa843e/edmkit-0.0.5.tar.gz", hash = "sha256:f584ac84a8a6d1a621e8166ace4aba5e172bd44477346a9626971c7b008bee26", size = 14841, upload-time = "2026-03-30T03:48:08.357Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/7c/d54b6052c0804acc10582693aee00bd6bf3eb52f0dc6b44cc3967a294aaa/edmkit-0.0.5-py3-none-any.whl", hash = "sha256:94a47ab9ab655b839a6547a49130e7010b49486b4817914c9a1d7325482dfda7", size = 20065, upload-time = "2026-03-30T03:48:09.259Z" },
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", specifier = ">=2.4.3" },
+    { name = "scipy", specifier = ">=1.17.1" },
+    { name = "tinygrad", specifier = ">=0.11.0" },
+    { name = "usearch", specifier = ">=2.23.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "hypothesis", specifier = ">=6.151.9" },
+    { name = "pytest", specifier = ">=9.0.2" },
+    { name = "ruff", specifier = ">=0.15.6" },
+    { name = "tabulate", specifier = ">=0.10.0" },
+    { name = "ty", specifier = ">=0.0.23" },
 ]
 
 [[package]]
@@ -195,7 +208,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "dimx", specifier = ">=1.1.1" },
-    { name = "edmkit", specifier = "==0.0.5" },
+    { name = "edmkit", directory = "../edmkit" },
     { name = "line-profiler", specifier = ">=5.0.0" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "opentelemetry-api", specifier = "==1.39.1" },

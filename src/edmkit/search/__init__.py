@@ -8,12 +8,15 @@ from .complementary import (
     greedy_complementary_folds,
     greedy_complementary_timepoints,
     mean_abs_error_per_sample,
+    mean_negative_correlation_contribution_per_sample,
+    mean_squared_error_per_sample,
     softmax_loss_weight,
     softmax_weight,
 )
 from .convergence import causation, make_ccm_filter
 from .dataset import Dataset, Subset, Transform
 from .greedy import greedy
+from .loo import greedy_loo
 from .types import FilterFn, SampleLossFn, Selection, Step
 
 

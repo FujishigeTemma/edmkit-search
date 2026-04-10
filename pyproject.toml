@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "dimx>=1.1.1",
-    "edmkit==0.0.5",
+    "edmkit @ file:///Users/temma/Repositories/edmkit",
     "line-profiler>=5.0.0",
     "matplotlib>=3.10.8",
     "opentelemetry-api==1.39.1",

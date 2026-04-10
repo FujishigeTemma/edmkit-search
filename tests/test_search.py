@@ -18,6 +18,8 @@ from edmkit.search import (
     greedy_complementary_folds,
     greedy_complementary_timepoints,
     mean_abs_error_per_sample,
+    mean_negative_correlation_contribution_per_sample,
+    mean_squared_error_per_sample,
     softmax_loss_weight,
     softmax_weight,
 )
@@ -1237,3 +1239,49 @@ class TestMeanAbsErrorPerSample:
         """Mismatched shapes raise ValueError."""
         with pytest.raises(ValueError, match="same shape"):
             mean_abs_error_per_sample(np.ones((3, 1)), np.ones((4, 1)))
+
+
+class TestMeanSquaredErrorPerSample:
+    def test_returns_per_sample_loss(self):
+        """Computes one scalar squared loss per sample."""
+        predictions = np.array([[1.0, 3.0], [2.0, 8.0]])
+        observations = np.array([[2.0, 1.0], [5.0, 2.0]])
+        losses = mean_squared_error_per_sample(predictions, observations)
+        np.testing.assert_allclose(losses, np.array([2.5, 22.5]))
+
+    def test_shape_mismatch_raises(self):
+        """Mismatched shapes raise ValueError."""
+        with pytest.raises(ValueError, match="same shape"):
+            mean_squared_error_per_sample(np.ones((3, 1)), np.ones((4, 1)))
+
+
+class TestMeanNegativeCorrelationContributionPerSample:
+    def test_returns_negative_contributions(self):
+        """Perfect positive correlation yields equal negative contributions."""
+        predictions = np.array([[1.0], [2.0], [3.0]])
+        observations = np.array([[1.0], [2.0], [3.0]])
+        contributions = mean_negative_correlation_contribution_per_sample(
+            predictions, observations
+        )
+        np.testing.assert_allclose(
+            contributions,
+            np.array([-0.5, 0.0, -0.5]),
+            atol=1e-12,
+        )
+
+    def test_constant_input_returns_zero(self):
+        """Degenerate dimensions contribute zero."""
+        predictions = np.array([[1.0], [1.0], [1.0]])
+        observations = np.array([[1.0], [2.0], [3.0]])
+        contributions = mean_negative_correlation_contribution_per_sample(
+            predictions, observations
+        )
+        np.testing.assert_allclose(contributions, np.zeros(3))
+
+    def test_shape_mismatch_raises(self):
+        """Mismatched shapes raise ValueError."""
+        with pytest.raises(ValueError, match="same shape"):
+            mean_negative_correlation_contribution_per_sample(
+                np.ones((3, 1)),
+                np.ones((4, 1)),
+            )

@@ -12,7 +12,7 @@ class FilterFn(Protocol):
 
 
 class SampleLossFn(Protocol):
-    """(predictions, observations) -> per-sample loss."""
+    """(predictions, observations) -> per-sample lower-is-better objective."""
 
     __name__: str
 

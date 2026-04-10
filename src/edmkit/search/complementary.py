@@ -12,6 +12,19 @@ WeightFunc = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 """Weight update function: (values, prev_values, prev_weights) -> new_weights."""
 
 
+def _validate_temperature(temperature: float) -> None:
+    if temperature <= 0:
+        raise ValueError(f"temperature must be positive, got {temperature}")
+
+
+def _softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.ndarray:
+    direction = -1.0 if maximize else 1.0
+    logits = direction * values / temperature
+    logits = logits - logits.max()
+    exp_logits = np.exp(logits)
+    return exp_logits / exp_logits.sum()
+
+
 def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
     """Create a softmax score-weighting strategy.
 
@@ -35,26 +48,22 @@ def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
     ValueError
         If temperature is not positive.
     """
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    _validate_temperature(temperature)
 
     def fn(
         scores: np.ndarray, prev_scores: np.ndarray, prev_weights: np.ndarray
     ) -> np.ndarray:
         del prev_scores, prev_weights
-        logits = -scores / temperature
-        logits = logits - logits.max()
-        exp_logits = np.exp(logits)
-        return exp_logits / exp_logits.sum()
+        return _softmax(scores, temperature=temperature, maximize=True)
 
     return fn
 
 
 def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
-    """Create a softmax loss-weighting strategy.
+    """Create a softmax value-weighting strategy.
 
-    Higher losses receive higher weight, encouraging the next variable to
-    focus on poorly predicted timepoints.
+    Higher lower-is-better objective values receive higher weight,
+    encouraging the next variable to focus on poorly explained timepoints.
 
     Parameters
     ----------
@@ -66,26 +75,40 @@ def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
     Returns
     -------
     WeightFunc
-        ``(losses, prev_losses, prev_weights) -> new_weights``.
+        ``(values, prev_values, prev_weights) -> new_weights``.
 
     Raises
     ------
     ValueError
         If temperature is not positive.
     """
-    if temperature <= 0:
-        raise ValueError(f"temperature must be positive, got {temperature}")
+    _validate_temperature(temperature)
 
     def fn(
         losses: np.ndarray, prev_losses: np.ndarray, prev_weights: np.ndarray
     ) -> np.ndarray:
         del prev_losses, prev_weights
-        logits = losses / temperature
-        logits = logits - logits.max()
-        exp_logits = np.exp(logits)
-        return exp_logits / exp_logits.sum()
+        return _softmax(losses, temperature=temperature, maximize=False)
 
     return fn
+
+
+def _as_matching_2d_arrays(
+    predictions: np.ndarray,
+    observations: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if predictions.shape != observations.shape:
+        raise ValueError(
+            f"predictions and observations must have the same shape, got "
+            f"{predictions.shape} and {observations.shape}"
+        )
+    if predictions.ndim == 1:
+        return predictions[:, None], observations[:, None]
+    if predictions.ndim != 2:
+        raise ValueError(
+            f"predictions and observations must be 1D or 2D, got {predictions.ndim}D"
+        )
+    return predictions, observations
 
 
 def mean_abs_error_per_sample(
@@ -111,19 +134,76 @@ def mean_abs_error_per_sample(
     ValueError
         If the input shapes do not match or are not 1D/2D.
     """
-    if predictions.shape != observations.shape:
-        raise ValueError(
-            f"predictions and observations must have the same shape, got "
-            f"{predictions.shape} and {observations.shape}"
-        )
-    if predictions.ndim == 1:
-        predictions = predictions[:, None]
-        observations = observations[:, None]
-    elif predictions.ndim != 2:
-        raise ValueError(
-            f"predictions and observations must be 1D or 2D, got {predictions.ndim}D"
-        )
+    predictions, observations = _as_matching_2d_arrays(predictions, observations)
     return np.abs(predictions - observations).mean(axis=1)
+
+
+def mean_squared_error_per_sample(
+    predictions: np.ndarray,
+    observations: np.ndarray,
+) -> np.ndarray:
+    """Compute mean squared error for each sample.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N,) or (N, D)
+        Predicted values.
+    observations : np.ndarray of shape (N,) or (N, D)
+        Observed values with the same shape as *predictions*.
+
+    Returns
+    -------
+    np.ndarray of shape (N,)
+        Mean squared error for each sample, averaged across dimensions.
+
+    Raises
+    ------
+    ValueError
+        If the input shapes do not match or are not 1D/2D.
+    """
+    predictions, observations = _as_matching_2d_arrays(predictions, observations)
+    return ((predictions - observations) ** 2).mean(axis=1)
+
+
+def mean_negative_correlation_contribution_per_sample(
+    predictions: np.ndarray,
+    observations: np.ndarray,
+) -> np.ndarray:
+    """Compute a per-sample objective aligned with Pearson correlation.
+
+    Each sample receives the negative of its standardized covariance
+    contribution, averaged across dimensions. Lower values are better.
+    Summing these contributions over samples recovers the numerator term
+    of Pearson correlation after normalization, so weighting them is
+    comparable in intent to weighting fold-level correlation scores.
+
+    Parameters
+    ----------
+    predictions : np.ndarray of shape (N,) or (N, D)
+        Predicted values.
+    observations : np.ndarray of shape (N,) or (N, D)
+        Observed values with the same shape as *predictions*.
+
+    Returns
+    -------
+    np.ndarray of shape (N,)
+        Negative correlation contribution for each sample, averaged across
+        dimensions.
+
+    Raises
+    ------
+    ValueError
+        If the input shapes do not match or are not 1D/2D.
+    """
+    predictions, observations = _as_matching_2d_arrays(predictions, observations)
+
+    p_centered = predictions - predictions.mean(axis=0, keepdims=True)
+    o_centered = observations - observations.mean(axis=0, keepdims=True)
+    denom = np.sqrt((p_centered**2).sum(axis=0) * (o_centered**2).sum(axis=0))
+    safe_denom = np.where(denom > 0, denom, 1.0)
+    contributions = (p_centered * o_centered) / safe_denom
+    contributions = np.where(denom > 0, contributions, 0.0)
+    return -contributions.mean(axis=1)
 
 
 def _validate_data(data: Dataset | Subset, *, max_dim: int) -> tuple[np.ndarray, np.ndarray]:
@@ -147,6 +227,73 @@ def _validate_data(data: Dataset | Subset, *, max_dim: int) -> tuple[np.ndarray,
 def _validate_folds(folds: list[Fold]) -> None:
     if len(folds) == 0:
         raise ValueError("split produced no folds")
+
+
+def _select_candidate(
+    candidates: list[tuple[int, float, np.ndarray]],
+    *,
+    X: np.ndarray,
+    Y: np.ndarray,
+    filter: FilterFn | None,
+) -> tuple[int, float, np.ndarray] | None:
+    for index, score, state in candidates:
+        if filter is not None and not filter(X[:, index], Y):
+            continue
+        return index, score, state
+    return None
+
+
+def _run_complementary_greedy(
+    *,
+    X: np.ndarray,
+    Y: np.ndarray,
+    max_dim: int,
+    initial_state: np.ndarray,
+    initial_weights: np.ndarray,
+    evaluate_candidates: Callable[
+        [list[int], set[int], np.ndarray, np.ndarray],
+        list[tuple[int, float, float, np.ndarray]],
+    ],
+    update_weights: WeightFunc,
+    filter: FilterFn | None,
+    threshold: float,
+) -> Iterator[Step]:
+    available: set[int] = set(range(X.shape[1]))
+    selected_indices: list[int] = []
+    current_state = initial_state
+    weights = initial_weights
+
+    for _ in range(max_dim):
+        results = evaluate_candidates(selected_indices, available, current_state, weights)
+        candidates = sorted(
+            (
+                (index, improvement, mean_score, state)
+                for index, improvement, mean_score, state in results
+                if mean_score >= threshold
+            ),
+            key=lambda candidate: candidate[1],
+            reverse=True,
+        )
+        best = _select_candidate(
+            [(index, mean_score, state) for index, _, mean_score, state in candidates],
+            X=X,
+            Y=Y,
+            filter=filter,
+        )
+        if best is None:
+            return
+
+        best_index, best_score, best_state = best
+        weights = update_weights(best_state, current_state, weights)
+        current_state = best_state
+        selected_indices.append(best_index)
+        available.remove(best_index)
+
+        yield Step(
+            index=best_index,
+            score=best_score,
+            selected=tuple(selected_indices),
+        )
 
 
 def _predict_subset(
@@ -266,52 +413,38 @@ def greedy_complementary_folds(
     K = len(folds)
     weight_func = weight if weight is not None else softmax_weight()
 
-    available: set[int] = set(range(X.shape[1]))
-    selected_indices: list[int] = []
-    current_scores = np.zeros(K)
-    weights = np.full(K, 1.0 / K)
-
-    for _ in range(max_dim):
+    def evaluate_candidates(
+        selected_indices: list[int],
+        available: set[int],
+        current_scores: np.ndarray,
+        weights: np.ndarray,
+    ) -> list[tuple[int, float, float, np.ndarray]]:
         results = []
-        for v in available:
+        for index in available:
             fold_scores = _fold_scores(
-                selected_indices + [v],
+                selected_indices + [index],
                 folds=folds,
                 X=X,
                 Y=Y,
                 predict=predict,
                 metric=metric,
             )
-            delta = fold_scores - current_scores
-            weighted_improvement = float(np.dot(weights, delta))
+            improvement = float(np.dot(weights, fold_scores - current_scores))
             mean_score = float(np.mean(fold_scores))
-            results.append((v, weighted_improvement, mean_score, fold_scores))
+            results.append((index, improvement, mean_score, fold_scores))
+        return results
 
-        candidates = sorted(
-            ((v, improvement, mean_score, scores)
-             for v, improvement, mean_score, scores in results
-             if mean_score >= threshold),
-            key=lambda result: result[1],
-            reverse=True,
-        )
-
-        best = None
-        for v, _, mean_score, fold_scores in candidates:
-            if filter is not None and not filter(X[:, v], Y):
-                continue
-            best = (v, mean_score, fold_scores)
-            break
-
-        if best is None:
-            return
-
-        best_v, best_mean_score, best_fold_scores = best
-        weights = weight_func(best_fold_scores, current_scores, weights)
-        current_scores = best_fold_scores
-        selected_indices.append(best_v)
-        available.remove(best_v)
-
-        yield Step(index=best_v, score=best_mean_score, selected=tuple(selected_indices))
+    yield from _run_complementary_greedy(
+        X=X,
+        Y=Y,
+        max_dim=max_dim,
+        initial_state=np.zeros(K),
+        initial_weights=np.full(K, 1.0 / K),
+        evaluate_candidates=evaluate_candidates,
+        update_weights=weight_func,
+        filter=filter,
+        threshold=threshold,
+    )
 
 
 def greedy_complementary_timepoints(
@@ -330,7 +463,8 @@ def greedy_complementary_timepoints(
 
     Candidates are evaluated on each fold, but the complementary weighting
     is applied to the concatenated validation timepoints. ``metric`` is
-    used only for the reported score and thresholding, while ``loss``
+    used for the reported score and thresholding, while ``loss``
+    provides a metric-aligned lower-is-better per-sample objective that
     determines which timepoints receive more attention.
 
     Parameters
@@ -344,8 +478,8 @@ def greedy_complementary_timepoints(
     split : SplitFunc
         Splitting strategy ``(n,) -> list[Fold]``.
     loss : SampleLossFn
-        Per-sample loss function returning ``(N_validation,)`` for each fold.
-        Default is ``mean_abs_error_per_sample``.
+        Per-sample lower-is-better objective returning ``(N_validation,)``
+        for each fold. Default is ``mean_abs_error_per_sample``.
     weight : WeightFunc | None
         Timepoint weight update function. Default is ``softmax_loss_weight()``.
     threshold : float
@@ -372,16 +506,16 @@ def greedy_complementary_timepoints(
     sample_count = sum(len(fold.validation) for fold in folds)
     weight_func = weight if weight is not None else softmax_loss_weight()
 
-    available: set[int] = set(range(X.shape[1]))
-    selected_indices: list[int] = []
-    current_losses = np.zeros(sample_count)
-    weights = np.full(sample_count, 1.0 / sample_count)
-
-    for _ in range(max_dim):
+    def evaluate_candidates(
+        selected_indices: list[int],
+        available: set[int],
+        current_losses: np.ndarray,
+        weights: np.ndarray,
+    ) -> list[tuple[int, float, float, np.ndarray]]:
         results = []
-        for v in available:
+        for index in available:
             fold_scores, sample_losses = _fold_scores_and_losses(
-                selected_indices + [v],
+                selected_indices + [index],
                 folds=folds,
                 X=X,
                 Y=Y,
@@ -389,34 +523,19 @@ def greedy_complementary_timepoints(
                 metric=metric,
                 loss=loss,
             )
-            improvement = current_losses - sample_losses
-            weighted_improvement = float(np.dot(weights, improvement))
+            improvement = float(np.dot(weights, current_losses - sample_losses))
             mean_score = float(np.mean(fold_scores))
-            results.append((v, weighted_improvement, mean_score, sample_losses))
+            results.append((index, improvement, mean_score, sample_losses))
+        return results
 
-        candidates = sorted(
-            ((v, improvement, mean_score, sample_losses)
-             for v, improvement, mean_score, sample_losses in results
-             if mean_score >= threshold),
-            key=lambda result: result[1],
-            reverse=True,
-        )
-
-        best = None
-        for v, _, mean_score, sample_losses in candidates:
-            if filter is not None and not filter(X[:, v], Y):
-                continue
-            best = (v, mean_score, sample_losses)
-            break
-
-        if best is None:
-            return
-
-        best_v, best_mean_score, best_sample_losses = best
-        weights = weight_func(best_sample_losses, current_losses, weights)
-        current_losses = best_sample_losses
-        selected_indices.append(best_v)
-        available.remove(best_v)
-
-        yield Step(index=best_v, score=best_mean_score, selected=tuple(selected_indices))
-
+    yield from _run_complementary_greedy(
+        X=X,
+        Y=Y,
+        max_dim=max_dim,
+        initial_state=np.zeros(sample_count),
+        initial_weights=np.full(sample_count, 1.0 / sample_count),
+        evaluate_candidates=evaluate_candidates,
+        update_weights=weight_func,
+        filter=filter,
+        threshold=threshold,
+    )
