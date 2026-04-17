@@ -153,7 +153,7 @@ wheels = [
 
 [[package]]
 name = "edmkit"
-version = "0.0.5"
+version = "0.0.6"
 source = { directory = "../edmkit" }
 dependencies = [
     { name = "numpy" },
@@ -172,6 +172,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "griffe2md", specifier = ">=1.5.0" },
     { name = "hypothesis", specifier = ">=6.151.9" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "ruff", specifier = ">=0.15.6" },

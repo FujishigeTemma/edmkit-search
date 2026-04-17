@@ -12,12 +12,12 @@ WeightFunc = Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray]
 """Weight update function: (values, prev_values, prev_weights) -> new_weights."""
 
 
-def _validate_temperature(temperature: float) -> None:
+def validate_temperature(temperature: float) -> None:
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
 
 
-def _softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.ndarray:
+def softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.ndarray:
     direction = -1.0 if maximize else 1.0
     logits = direction * values / temperature
     logits = logits - logits.max()
@@ -48,13 +48,13 @@ def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
     ValueError
         If temperature is not positive.
     """
-    _validate_temperature(temperature)
+    validate_temperature(temperature)
 
     def fn(
         scores: np.ndarray, prev_scores: np.ndarray, prev_weights: np.ndarray
     ) -> np.ndarray:
         del prev_scores, prev_weights
-        return _softmax(scores, temperature=temperature, maximize=True)
+        return softmax(scores, temperature=temperature, maximize=True)
 
     return fn
 
@@ -82,13 +82,13 @@ def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
     ValueError
         If temperature is not positive.
     """
-    _validate_temperature(temperature)
+    validate_temperature(temperature)
 
     def fn(
         losses: np.ndarray, prev_losses: np.ndarray, prev_weights: np.ndarray
     ) -> np.ndarray:
         del prev_losses, prev_weights
-        return _softmax(losses, temperature=temperature, maximize=False)
+        return softmax(losses, temperature=temperature, maximize=False)
 
     return fn
 
@@ -206,7 +206,9 @@ def mean_negative_correlation_contribution_per_sample(
     return -contributions.mean(axis=1)
 
 
-def _validate_data(data: Dataset | Subset, *, max_dim: int) -> tuple[np.ndarray, np.ndarray]:
+def _validate_data(
+    data: Dataset | Subset, *, max_dim: int
+) -> tuple[np.ndarray, np.ndarray]:
     X = data.X
     Y = data.Y
 
@@ -215,7 +217,9 @@ def _validate_data(data: Dataset | Subset, *, max_dim: int) -> tuple[np.ndarray,
     if Y.ndim == 1:
         Y = Y[:, None]
     elif Y.ndim != 2:
-        raise ValueError(f"Y must be 1D or 2D array, got {Y.ndim}D with shape {Y.shape}")
+        raise ValueError(
+            f"Y must be 1D or 2D array, got {Y.ndim}D with shape {Y.shape}"
+        )
 
     M = X.shape[1]
     if max_dim > M:
@@ -264,7 +268,9 @@ def _run_complementary_greedy(
     weights = initial_weights
 
     for _ in range(max_dim):
-        results = evaluate_candidates(selected_indices, available, current_state, weights)
+        results = evaluate_candidates(
+            selected_indices, available, current_state, weights
+        )
         candidates = sorted(
             (
                 (index, improvement, mean_score, state)
