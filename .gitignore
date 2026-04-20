@@ -18,3 +18,5 @@ otel.db
 
 # Generated images
 *.png
+
+.DS_Store
