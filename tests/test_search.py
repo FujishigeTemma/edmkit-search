@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 import pytest
-from hypothesis import assume, given
+from hypothesis import given
 from hypothesis import strategies as st
 from hypothesis.extra.numpy import arrays
 from scipy.spatial.distance import cdist
@@ -13,7 +13,7 @@ from functools import partial
 
 from edmkit.metrics import mae
 from edmkit.search import Dataset, Selection, Step, collect
-from edmkit.search import anneal, beam, geometric_cooling, greedy
+from edmkit.search import beam, greedy
 from edmkit.search import (
     greedy_complementary_folds,
     greedy_complementary_timepoints,
@@ -145,18 +145,6 @@ def run(algo: str, ds: Dataset, max_dim: int) -> list[Step]:
                 threshold=-float("inf"),
             )
         )
-    elif algo == "anneal":
-        return list(
-            anneal(
-                ds,
-                ds,
-                predict=colsum_predict,
-                metric=neg_mae,
-                n_steps=20,
-                max_dim=max_dim,
-                rng=np.random.default_rng(0),
-            )
-        )
     elif algo == "complementary":
         T = ds.X.shape[0]
         ts = max(T // 3, 1)
@@ -179,7 +167,7 @@ class TestStructuralInvariants:
     """Property-based tests for invariants that hold across all algorithms."""
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_index_is_last_selected(self, algo: str, data: tuple[Dataset, int]):
         """step.index == step.selected[-1] for all algorithms."""
         ds, max_dim = data
@@ -187,7 +175,7 @@ class TestStructuralInvariants:
             assert step.index == step.selected[-1]
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_no_duplicate_indices(self, algo: str, data: tuple[Dataset, int]):
         """No duplicate indices in step.selected."""
         ds, max_dim = data
@@ -195,7 +183,7 @@ class TestStructuralInvariants:
             assert len(step.selected) == len(set(step.selected))
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_indices_in_range(self, algo: str, data: tuple[Dataset, int]):
         """All indices in [0, M)."""
         ds, max_dim = data
@@ -205,7 +193,7 @@ class TestStructuralInvariants:
                 assert 0 <= idx < M
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_selected_within_max_dim(self, algo: str, data: tuple[Dataset, int]):
         """len(step.selected) <= max_dim."""
         ds, max_dim = data
@@ -213,7 +201,7 @@ class TestStructuralInvariants:
             assert len(step.selected) <= max_dim
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_score_is_finite(self, algo: str, data: tuple[Dataset, int]):
         """step.score is finite."""
         ds, max_dim = data
@@ -231,7 +219,7 @@ class TestStructuralInvariants:
             prev_len = len(step.selected)
 
     @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_collect_invariants(self, algo: str, data: tuple[Dataset, int]):
         """collect() length consistency and indices match last step."""
         ds, max_dim = data
@@ -316,22 +304,6 @@ class TestMetamorphicRelations:
         )
         assert len(steps_lo) >= len(steps_hi)
 
-    @given(
-        T_start=st.floats(0.1, 100.0, allow_nan=False, allow_infinity=False),
-        T_end=st.floats(0.001, 10.0, allow_nan=False, allow_infinity=False),
-        n_steps=st.integers(2, 100),
-    )
-    def test_geometric_cooling_bounded(
-        self, T_start: float, T_end: float, n_steps: int
-    ):
-        """geometric_cooling output is bounded by [T_end, T_start]."""
-        assume(T_start > T_end)
-        sched = geometric_cooling(T_start=T_start, T_end=T_end)
-        for step in range(n_steps):
-            T = sched(step, n_steps)
-            assert T_end <= T + 1e-10  # small tolerance
-            assert T <= T_start + 1e-10
-
 
 # ---------------------------------------------------------------------------
 # 3. Oracle comparisons (property-based)
@@ -385,7 +357,7 @@ class TestValidationPBT:
         M=st.integers(1, 8),
         excess=st.integers(1, 10),
     )
-    @pytest.mark.parametrize("algo", ["greedy", "beam", "anneal", "complementary"])
+    @pytest.mark.parametrize("algo", ["greedy", "beam", "complementary"])
     def test_max_dim_exceeds_M(self, algo: str, M: int, excess: int):
         """max_dim > M raises ValueError for all algorithms."""
         ds = make_dataset(M=M)
@@ -640,128 +612,6 @@ class TestBeam:
 
 
 # ---------------------------------------------------------------------------
-# 4. Anneal tests
-# ---------------------------------------------------------------------------
-
-
-class TestAnneal:
-    def test_deterministic_with_seed(self):
-        """Same seed produces same results."""
-        ds = make_dataset()
-        steps1 = list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=50,
-                max_dim=3,
-                rng=np.random.default_rng(42),
-            )
-        )
-        steps2 = list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=50,
-                max_dim=3,
-                rng=np.random.default_rng(42),
-            )
-        )
-        assert len(steps1) == len(steps2)
-        for s1, s2 in zip(steps1, steps2):
-            assert s1.index == s2.index
-            np.testing.assert_allclose(s1.score, s2.score, rtol=1e-10)
-
-    def test_max_dim_constraint(self):
-        """Anneal respects max_dim."""
-        ds = make_dataset()
-        steps = list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=50,
-                max_dim=2,
-                rng=np.random.default_rng(0),
-            )
-        )
-        assert len(steps) <= 2
-        if steps:
-            assert len(steps[-1].selected) <= 2
-
-    def test_filter_respected(self):
-        """Anneal respects filter."""
-        ds = make_dataset(M=4)
-        blocked = {0}
-
-        def allow_subset(x: np.ndarray, Y: np.ndarray) -> bool:
-            for i in blocked:
-                if np.array_equal(x, ds.X[:, i]):
-                    return False
-            return True
-
-        steps = list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=50,
-                max_dim=3,
-                filter=allow_subset,
-                rng=np.random.default_rng(0),
-            )
-        )
-        for step in steps:
-            for idx in step.selected:
-                assert idx not in blocked
-
-    def test_custom_schedule(self):
-        """Custom ScheduleFn is used."""
-        ds = make_dataset()
-        calls: list[tuple[int, int]] = []
-
-        def tracking_schedule(step: int, n_steps: int) -> float:
-            calls.append((step, n_steps))
-            return 1.0  # constant temperature
-
-        list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=20,
-                max_dim=2,
-                schedule=tracking_schedule,
-                rng=np.random.default_rng(0),
-            )
-        )
-        assert len(calls) == 20
-        assert all(n == 20 for _, n in calls)
-
-    def test_anneal_yields_steps(self):
-        """Anneal yields at least one step with low threshold."""
-        ds = make_dataset()
-        steps = list(
-            anneal(
-                ds,
-                ds,
-                predict=dummy_predict,
-                metric=mean_abs_corr,
-                n_steps=50,
-                max_dim=3,
-                rng=np.random.default_rng(0),
-            )
-        )
-        assert len(steps) >= 1
-
-
-# ---------------------------------------------------------------------------
 # 5. collect tests
 # ---------------------------------------------------------------------------
 
@@ -799,35 +649,6 @@ class TestCollect:
         )
         assert isinstance(result, Selection)
         assert len(result.indices) == len(result.scores)
-
-
-# ---------------------------------------------------------------------------
-# 6. geometric_cooling tests
-# ---------------------------------------------------------------------------
-
-
-class TestGeometricCooling:
-    def test_endpoints(self):
-        """Schedule hits T_start at step=0 and T_end at step=n_steps-1."""
-        sched = geometric_cooling(T_start=10.0, T_end=0.1)
-        np.testing.assert_allclose(sched(0, 100), 10.0, rtol=1e-10)
-        np.testing.assert_allclose(sched(99, 100), 0.1, rtol=1e-10)
-
-    def test_monotonically_decreasing(self):
-        """Temperature decreases monotonically."""
-        sched = geometric_cooling(T_start=5.0, T_end=0.01)
-        temps = [sched(i, 50) for i in range(50)]
-        for i in range(1, len(temps)):
-            assert temps[i] < temps[i - 1]
-
-    def test_invalid_params(self):
-        """Invalid parameters raise ValueError."""
-        with pytest.raises(ValueError, match="T_start"):
-            geometric_cooling(T_start=-1.0)
-        with pytest.raises(ValueError, match="T_end"):
-            geometric_cooling(T_end=-1.0)
-        with pytest.raises(ValueError, match="T_start must be > T_end"):
-            geometric_cooling(T_start=0.1, T_end=1.0)
 
 
 # ---------------------------------------------------------------------------

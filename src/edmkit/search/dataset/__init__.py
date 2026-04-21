@@ -1,6 +1,5 @@
 # ruff: noqa: F401
-"""Dataset subpackage: containers, transforms, and loader."""
+"""Dataset subpackage: containers and transforms."""
 
 from .containers import Dataset, Subset
-from .loader import DataLoader
 from .transforms import Transform, compose, gaussian_noise, zscore_normalize

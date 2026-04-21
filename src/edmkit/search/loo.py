@@ -8,16 +8,6 @@ from .dataset import Dataset, Subset
 from .types import FilterFn, Step
 
 
-def theiler_window(E: int, *, tau: int, n_ahead: int) -> int:
-    """Compute the Theiler window half-width.
-
-    ``(E - 1) * tau + n_ahead`` ensures that no library point shares
-    embedding coordinates or prediction-target time indices with the
-    query point.
-    """
-    return (E - 1) * tau + n_ahead
-
-
 def loo_score(
     indices: list[int],
     *,
@@ -28,11 +18,7 @@ def loo_score(
     n_ahead: int,
 ) -> float:
     """Score a variable subset by LOO prediction quality."""
-    predictions = loo(
-        X[:, indices],
-        Y,
-        theiler_window=theiler_window(len(indices), tau=tau, n_ahead=n_ahead),
-    )
+    predictions = loo(X[:, indices], Y, theiler_window=(len(indices) - 1) * tau)
     if predictions.ndim == 1:
         predictions = predictions[:, None]
     return float(metric(predictions, Y))
@@ -54,7 +40,7 @@ def greedy_loo(
     via ``simplex_projection`` with Theiler window exclusion and
     evaluating the metric on all LOO predictions at once.
 
-    The Theiler window ``(E - 1) * tau + n_ahead`` grows with the number
+    The Theiler window ``(E - 1) * tau`` grows with the number
     of selected variables E, preventing temporal data leakage at every
     step.
 

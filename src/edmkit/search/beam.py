@@ -60,16 +60,15 @@ def beam(
     beams: list[tuple[list[int], float]] = [([], float("-inf"))]
 
     for dim in range(1, max_dim + 1):
-        # Collect unique candidate subsets before scoring
+        # Collect unique candidate subsets before scoring.  The optional
+        # per-column ``filter`` is applied lazily after ranking (see below)
+        # so we do not pay its cost for candidates that never make the cut.
         unique: dict[frozenset[int], list[int]] = {}
         for indices, _ in beams:
             used = set(indices)
             for candidate in range(N):
                 if candidate in used:
                     continue
-                if filter is not None and not filter(X_train[:, candidate], Y_train):
-                    continue
-
                 new_indices = indices + [candidate]
                 key = frozenset(new_indices)
                 if key not in unique:
@@ -92,12 +91,28 @@ def beam(
             for indices in unique.values()
         ]
 
-        # Filter by threshold and keep top beam_width
-        above = [(idx, s) for idx, s in scored if s >= threshold]
-        if not above:
+        # Sort by score descending, then apply the per-column filter lazily
+        # on the newly added column (indices[-1]) — prior columns in each
+        # beam path survived filter at earlier dims.  Keep the top
+        # beam_width accepted subsets.
+        ordered = sorted(
+            ((idx, s) for idx, s in scored if s >= threshold),
+            key=lambda b: b[1],
+            reverse=True,
+        )
+
+        accepted: list[tuple[list[int], float]] = []
+        for idx, s in ordered:
+            if len(accepted) >= beam_width:
+                break
+            if filter is not None and not filter(X_train[:, idx[-1]], Y_train):
+                continue
+            accepted.append((idx, s))
+
+        if not accepted:
             return
 
-        beams = sorted(above, key=lambda b: b[1], reverse=True)[:beam_width]
+        beams = accepted
 
         best_indices, best_score = beams[0]
         yield Step(
