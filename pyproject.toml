@@ -31,3 +31,10 @@ addopts = "-x --tb=short"
 
 [tool.uv.build-backend]
 module-name = "edmkit.search"
+
+[tool.ty.environment]
+extra-paths = ["experiments"]
+
+[tool.ty.src]
+exclude = [".claude"]
+

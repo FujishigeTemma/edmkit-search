@@ -27,43 +27,70 @@ the building blocks of the adaptive evaluations.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from typing import Protocol
 
 import numpy as np
 from edmkit.metrics import MetricFunc
-from edmkit.simplex_projection import loo as _simplex_loo
+from edmkit.simplex_projection import loo as simplex_loo
 from edmkit.splits import Fold
 from edmkit.types import PredictFunc
 
-from .types import (
-    Evaluation,
-    FilterFn,
-    SampleLossFn,
-    ScoreFunc,
-    Step,
-    Strategy,
-    WeightFunc,
-)
+from . import FilterFn, Step, Strategy
 
-# ---------------------------------------------------------------------------
-# Aggregation alias
-# ---------------------------------------------------------------------------
+
+class SampleLossFn(Protocol):
+    """``(predictions, observations) -> per-sample lower-is-better loss``."""
+
+    __name__: str
+
+    def __call__(
+        self,
+        predictions: np.ndarray,
+        observations: np.ndarray,
+        /,
+    ) -> np.ndarray: ...
+
+
+class WeightFunc(Protocol):
+    """``(state) -> weights``.
+
+    For ``weighted_folds`` the input is parent per-fold scores ``(K,)``.
+    For ``weighted_timepoints`` it is parent per-sample losses
+    ``(N_total,)``. Returned weights share the input shape and sum to one.
+    """
+
+    def __call__(self, state: np.ndarray) -> np.ndarray: ...
+
+
+class Evaluation(Protocol):
+    """Higher-order candidate-evaluation plan.
+
+    Built by a factory (e.g. :func:`holdout`) that closes over the data /
+    metric / split / weighting. Given a strategy, runs the search and
+    yields :class:`Step` s.
+    """
+
+    def __call__(
+        self,
+        strategy: Strategy,
+        *,
+        max_dim: int,
+        threshold: float = 0.0,
+        filter: FilterFn | None = None,
+    ) -> Iterator[Step]: ...
+
 
 type AggregateFunc = Callable[[np.ndarray], float]
 """``(per-fold scores) -> scalar``."""
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-def _ensure_2d_features(X: np.ndarray, *, name: str) -> np.ndarray:
+def ensure_2d_features(X: np.ndarray, *, name: str) -> np.ndarray:
     if X.ndim != 2:
         raise ValueError(f"{name} must be 2D, got {X.ndim}D with shape {X.shape}")
     return X
 
 
-def _ensure_2d_target(Y: np.ndarray, *, name: str) -> np.ndarray:
+def ensure_2d_target(Y: np.ndarray, *, name: str) -> np.ndarray:
     if Y.ndim == 1:
         return Y[:, None]
     if Y.ndim != 2:
@@ -71,7 +98,7 @@ def _ensure_2d_target(Y: np.ndarray, *, name: str) -> np.ndarray:
     return Y
 
 
-def _predict_2d(
+def predict_2d(
     indices: Sequence[int],
     *,
     X_train: np.ndarray,
@@ -86,43 +113,17 @@ def _predict_2d(
     return predictions
 
 
-def _validate_temperature(temperature: float) -> None:
+def validate_temperature(temperature: float) -> None:
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
 
 
-def _softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.ndarray:
+def softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.ndarray:
     direction = -1.0 if maximize else 1.0
     logits = direction * values / temperature
     logits = logits - logits.max()
     exp_logits = np.exp(logits)
     return exp_logits / exp_logits.sum()
-
-
-def _run[S](
-    strategy: Strategy,
-    *,
-    score: ScoreFunc[S],
-    n_candidates: int,
-    initial_state: S,
-    max_dim: int,
-    threshold: float,
-    filter: FilterFn | None,
-) -> Iterator[Step]:
-    """Forward the call to the strategy with the evaluation's bound pieces."""
-    return strategy(
-        score,
-        n_candidates=n_candidates,
-        initial_state=initial_state,
-        max_dim=max_dim,
-        threshold=threshold,
-        filter=filter,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Weight constructors
-# ---------------------------------------------------------------------------
 
 
 def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
@@ -144,10 +145,10 @@ def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
     ValueError
         If ``temperature`` is not positive.
     """
-    _validate_temperature(temperature)
+    validate_temperature(temperature)
 
     def fn(state: np.ndarray) -> np.ndarray:
-        return _softmax(state, temperature=temperature, maximize=True)
+        return softmax(state, temperature=temperature, maximize=True)
 
     return fn
 
@@ -169,10 +170,10 @@ def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
     ValueError
         If ``temperature`` is not positive.
     """
-    _validate_temperature(temperature)
+    validate_temperature(temperature)
 
     def fn(state: np.ndarray) -> np.ndarray:
-        return _softmax(state, temperature=temperature, maximize=False)
+        return softmax(state, temperature=temperature, maximize=False)
 
     return fn
 
@@ -182,7 +183,7 @@ def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
 # ---------------------------------------------------------------------------
 
 
-def _as_matching_2d(
+def as_matching_2d(
     predictions: np.ndarray,
     observations: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -205,7 +206,7 @@ def mean_abs_error_per_sample(
     observations: np.ndarray,
 ) -> np.ndarray:
     """Mean absolute error per sample, averaged across target dimensions."""
-    predictions, observations = _as_matching_2d(predictions, observations)
+    predictions, observations = as_matching_2d(predictions, observations)
     return np.abs(predictions - observations).mean(axis=1)
 
 
@@ -214,7 +215,7 @@ def mean_squared_error_per_sample(
     observations: np.ndarray,
 ) -> np.ndarray:
     """Mean squared error per sample, averaged across target dimensions."""
-    predictions, observations = _as_matching_2d(predictions, observations)
+    predictions, observations = as_matching_2d(predictions, observations)
     return ((predictions - observations) ** 2).mean(axis=1)
 
 
@@ -229,7 +230,7 @@ def mean_negative_correlation_contribution_per_sample(
     recovers the Pearson-correlation numerator, so weighting these is
     comparable in intent to weighting fold-level correlation scores.
     """
-    predictions, observations = _as_matching_2d(predictions, observations)
+    predictions, observations = as_matching_2d(predictions, observations)
 
     p_centered = predictions - predictions.mean(axis=0, keepdims=True)
     o_centered = observations - observations.mean(axis=0, keepdims=True)
@@ -269,15 +270,15 @@ def holdout(
     Evaluation
         Higher-order: ``evaluation(strategy, *, max_dim, ...)``.
     """
-    X_train_2d = _ensure_2d_features(X_train, name="X_train")
-    X_val_2d = _ensure_2d_features(X_val, name="X_val")
-    Y_train_2d = _ensure_2d_target(Y_train, name="Y_train")
-    Y_val_2d = _ensure_2d_target(Y_val, name="Y_val")
+    X_train_2d = ensure_2d_features(X_train, name="X_train")
+    X_val_2d = ensure_2d_features(X_val, name="X_val")
+    Y_train_2d = ensure_2d_target(Y_train, name="Y_train")
+    Y_val_2d = ensure_2d_target(Y_val, name="Y_val")
     n_candidates = X_train_2d.shape[1]
 
     def score(indices: Sequence[int], parent_state: None) -> tuple[float, None]:
         del parent_state
-        predictions = _predict_2d(
+        predictions = predict_2d(
             indices,
             X_train=X_train_2d, X_query=X_val_2d, Y_train=Y_train_2d,
             predict=predict,
@@ -291,9 +292,8 @@ def holdout(
         threshold: float = 0.0,
         filter: FilterFn | None = None,
     ) -> Iterator[Step]:
-        return _run(
-            strategy,
-            score=score,
+        return strategy(
+            score,
             n_candidates=n_candidates,
             initial_state=None,
             max_dim=max_dim,
@@ -329,8 +329,8 @@ def folds(
     -------
     Evaluation
     """
-    X_2d = _ensure_2d_features(X, name="X")
-    Y_2d = _ensure_2d_target(Y, name="Y")
+    X_2d = ensure_2d_features(X, name="X")
+    Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
@@ -340,7 +340,7 @@ def folds(
         del parent_state
         per_fold = np.empty(len(fold_list))
         for k, fold in enumerate(fold_list):
-            predictions = _predict_2d(
+            predictions = predict_2d(
                 indices,
                 X_train=X_2d[fold.train],
                 X_query=X_2d[fold.validation],
@@ -357,9 +357,8 @@ def folds(
         threshold: float = 0.0,
         filter: FilterFn | None = None,
     ) -> Iterator[Step]:
-        return _run(
-            strategy,
-            score=score,
+        return strategy(
+            score,
             n_candidates=n_candidates,
             initial_state=None,
             max_dim=max_dim,
@@ -395,8 +394,8 @@ def loo(
     -------
     Evaluation
     """
-    X_2d = _ensure_2d_features(X, name="X")
-    Y_2d = _ensure_2d_target(Y, name="Y")
+    X_2d = ensure_2d_features(X, name="X")
+    Y_2d = ensure_2d_target(Y, name="Y")
     if tau < 0:
         raise ValueError(f"tau must be non-negative, got {tau}")
     n_candidates = X_2d.shape[1]
@@ -405,7 +404,7 @@ def loo(
         del parent_state
         idx = list(indices)
         theiler_window = (len(idx) - 1) * tau
-        predictions = _simplex_loo(X_2d[:, idx], Y_2d, theiler_window=theiler_window)
+        predictions = simplex_loo(X_2d[:, idx], Y_2d, theiler_window=theiler_window)
         if predictions.ndim == 1:
             predictions = predictions[:, None]
         return float(metric(predictions, Y_2d)), None
@@ -417,9 +416,8 @@ def loo(
         threshold: float = 0.0,
         filter: FilterFn | None = None,
     ) -> Iterator[Step]:
-        return _run(
-            strategy,
-            score=score,
+        return strategy(
+            score,
             n_candidates=n_candidates,
             initial_state=None,
             max_dim=max_dim,
@@ -458,8 +456,8 @@ def weighted_folds(
     -------
     Evaluation
     """
-    X_2d = _ensure_2d_features(X, name="X")
-    Y_2d = _ensure_2d_target(Y, name="Y")
+    X_2d = ensure_2d_features(X, name="X")
+    Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
@@ -469,7 +467,7 @@ def weighted_folds(
     def fold_scores(indices: Sequence[int]) -> np.ndarray:
         per = np.empty(len(fold_list))
         for k, fold in enumerate(fold_list):
-            predictions = _predict_2d(
+            predictions = predict_2d(
                 indices,
                 X_train=X_2d[fold.train],
                 X_query=X_2d[fold.validation],
@@ -494,9 +492,8 @@ def weighted_folds(
         threshold: float = 0.0,
         filter: FilterFn | None = None,
     ) -> Iterator[Step]:
-        return _run(
-            strategy,
-            score=score,
+        return strategy(
+            score,
             n_candidates=n_candidates,
             initial_state=initial_state,
             max_dim=max_dim,
@@ -538,8 +535,8 @@ def weighted_timepoints(
     -------
     Evaluation
     """
-    X_2d = _ensure_2d_features(X, name="X")
-    Y_2d = _ensure_2d_target(Y, name="Y")
+    X_2d = ensure_2d_features(X, name="X")
+    Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
@@ -550,7 +547,7 @@ def weighted_timepoints(
     def sample_losses(indices: Sequence[int]) -> np.ndarray:
         chunks: list[np.ndarray] = []
         for fold in fold_list:
-            predictions = _predict_2d(
+            predictions = predict_2d(
                 indices,
                 X_train=X_2d[fold.train],
                 X_query=X_2d[fold.validation],
@@ -575,9 +572,8 @@ def weighted_timepoints(
         threshold: float = 0.0,
         filter: FilterFn | None = None,
     ) -> Iterator[Step]:
-        return _run(
-            strategy,
-            score=score,
+        return strategy(
+            score,
             n_candidates=n_candidates,
             initial_state=initial_state,
             max_dim=max_dim,

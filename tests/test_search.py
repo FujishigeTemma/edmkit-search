@@ -125,7 +125,7 @@ def search_inputs_impl(draw, *, min_m=2, max_m=8, min_n=8, max_n=30):
 
 
 def search_inputs(*, min_m=2, max_m=8, min_n=8, max_n=30):
-    return search_inputs_impl(min_m=min_m, max_m=max_m, min_n=min_n, max_n=max_n)
+    return search_inputs_impl(min_m=min_m, max_m=max_m, min_n=min_n, max_n=max_n)  # ty: ignore[missing-argument]
 
 
 # ---------------------------------------------------------------------------

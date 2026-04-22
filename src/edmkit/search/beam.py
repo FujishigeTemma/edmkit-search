@@ -10,11 +10,11 @@ from __future__ import annotations
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
-from .types import FilterFn, ScoreFunc, Step
+from . import FilterFn, ScoreFunc, Step
 
 
 @dataclass(frozen=True)
-class _Path[S]:
+class BeamPath[S]:
     selected: tuple[int, ...]
     state: S
     score: float
@@ -67,14 +67,14 @@ def beam[S](
     if beam_width < 1:
         raise ValueError(f"beam_width must be >= 1, got {beam_width}")
 
-    paths: list[_Path[S]] = [
-        _Path(selected=(), state=initial_state, score=float("-inf"))
+    paths: list[BeamPath[S]] = [
+        BeamPath(selected=(), state=initial_state, score=float("-inf"))
     ]
 
     all_indices = set(range(n_candidates))
 
     for _ in range(max_dim):
-        frontier: list[_Path[S]] = []
+        frontier: list[BeamPath[S]] = []
         for path in paths:
             for candidate in all_indices - set(path.selected):
                 if filter is not None and not filter(candidate):
@@ -84,7 +84,7 @@ def beam[S](
                 if cand_score < threshold:
                     continue
                 frontier.append(
-                    _Path(
+                    BeamPath(
                         selected=path.selected + (candidate,),
                         state=cand_state,
                         score=cand_score,

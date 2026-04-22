@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 
-from .types import FilterFn, ScoreFunc, Step
+from . import FilterFn, ScoreFunc, Step
 
 
 def greedy[S](

@@ -1,4 +1,4 @@
-# ruff: noqa: F401
+# ruff: noqa: E402, F401
 """Subset-selection search.
 
 Three orthogonal concepts — combine freely:
@@ -19,11 +19,62 @@ Example
 ... )
 >>> steps = list(evaluation(greedy, max_dim=10, filter=my_filter))
 """
-from collections.abc import Iterable
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from typing import NamedTuple, Protocol
+
+# Core selection protocol — defined here before strategy modules import them
+# so that ``from . import Step, ...`` inside greedy.py / beam.py can resolve
+# via the partially-initialised package namespace.
+
+
+type ScoreFunc[S] = Callable[[Sequence[int], S], tuple[float, S]]
+"""``(indices, parent_state) -> (score, next_state)``."""
+
+
+class FilterFn(Protocol):
+    """``(index) -> accept`` over individual candidate indices."""
+
+    def __call__(self, index: int, /) -> bool: ...
+
+
+class Step(NamedTuple):
+    """Result of a single selection step along the chosen path."""
+
+    index: int
+    score: float
+    selected: tuple[int, ...]
+
+
+class Selection(NamedTuple):
+    """Aggregated result of a search run."""
+
+    indices: list[int]
+    scores: list[float]
+
+
+class Strategy(Protocol):
+    """Exploration algorithm: ``greedy`` / ``beam`` / ...."""
+
+    def __call__[S](
+        self,
+        score: ScoreFunc[S],
+        *,
+        n_candidates: int,
+        initial_state: S,
+        max_dim: int,
+        threshold: float = 0.0,
+        filter: FilterFn | None = None,
+    ) -> Iterator[Step]: ...
+
 
 from .beam import beam
 from .dataset import Dataset, Subset, Transform
 from .evaluations import (
+    Evaluation,
+    SampleLossFn,
+    WeightFunc,
     folds,
     holdout,
     loo,
@@ -36,16 +87,6 @@ from .evaluations import (
     weighted_timepoints,
 )
 from .greedy import greedy
-from .types import (
-    Evaluation,
-    FilterFn,
-    SampleLossFn,
-    ScoreFunc,
-    Selection,
-    Step,
-    Strategy,
-    WeightFunc,
-)
 
 
 def collect(steps: Iterable[Step]) -> Selection:
