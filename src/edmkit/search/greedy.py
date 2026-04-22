@@ -1,96 +1,90 @@
-from collections.abc import Iterator
+"""Greedy forward search.
 
-from edmkit.metrics import MetricFunc
-from edmkit.types import PredictFunc
+Pure function. Takes a scorer plus ``n_candidates`` / ``initial_state`` /
+``max_dim`` and yields :class:`Step` s. Equivalent to :func:`beam` with
+``beam_width=1``.
+"""
+from __future__ import annotations
 
-from .common import prepare_data, score_subset
-from .dataset import Dataset, Subset
-from .types import FilterFn, Step
+from collections.abc import Iterator, Sequence
+
+from .types import FilterFn, ScoreFunc, Step
 
 
-def greedy(
-    train: Dataset | Subset,
-    validation: Dataset | Subset,
+def greedy[S](
+    score: ScoreFunc[S],
     *,
-    predict: PredictFunc,
-    metric: MetricFunc,
+    n_candidates: int,
+    initial_state: S,
+    max_dim: int,
     threshold: float = 0.0,
-    max_dim: int = 10,
     filter: FilterFn | None = None,
 ) -> Iterator[Step]:
-    """Greedily select variables that maximize prediction skill.
+    """Greedily select up to ``max_dim`` indices from ``range(n_candidates)``.
 
-    Yields one ``Step`` per dimension, allowing early termination and
-    custom control logic.
+    At each step the highest-scoring candidate (per ``score``) that passes
+    ``filter`` and clears ``threshold`` is appended. Iteration ends early
+    when no candidate qualifies.
 
     Parameters
     ----------
-    train : Dataset | Subset
-        Training data. Only ``.X`` and ``.Y`` are accessed.
-    validation : Dataset | Subset
-        Validation data for evaluating candidates.
-    predict : PredictFunc
-        Prediction function ``(X, Y, Q, *, mask) -> predictions``.
-    metric : MetricFunc
-        Metric function for evaluating prediction quality.
-    threshold : float
-        Minimum score for candidate selection. Default is 0.0.
+    score : ScoreFunc[S]
+        Pure ``(indices, parent_state) -> (score, next_state)``. Usually
+        produced by an :class:`~edmkit.search.types.Evaluation` factory.
+    n_candidates : int
+        Number of available candidate columns; the candidate set is
+        ``range(n_candidates)``.
+    initial_state : S
+        State of a new path before any selection. ``None`` for static
+        evaluations; e.g. ``np.zeros(K)`` for adaptive ones.
     max_dim : int
-        Maximum number of variables to select. Default is 10.
+        Maximum number of selections. Must be ``<= n_candidates``.
+    threshold : float
+        Candidates with score strictly below this are skipped.
     filter : FilterFn | None
-        Optional filter ``(x, Y) -> bool`` to accept/reject candidates.
-        Called on the best candidate each iteration; if rejected, tries next best.
+        Per-index predicate over candidate columns.
 
     Yields
     ------
     Step
-        Result of each dimension selection step.
+
+    Raises
+    ------
+    ValueError
+        If ``n_candidates < 1`` or ``max_dim > n_candidates``.
     """
-    X_train, X_validation, Y_train, Y_validation = prepare_data(train, validation)
-
-    N = X_train.shape[1]
-    if max_dim > N:
-        raise ValueError(f"max_dim must be <= N (={N}), got {max_dim}")
-
-    available: set[int] = set(range(N))
-    selected_indices: list[int] = []
-
-    for dim in range(1, max_dim + 1):
-        results = [
-            (v, score_subset(
-                selected_indices + [v],
-                X_train=X_train,
-                X_validation=X_validation,
-                Y_train=Y_train,
-                Y_validation=Y_validation,
-                predict=predict,
-                metric=metric,
-            ))
-            for v in available
-        ]
-
-        candidates = sorted(
-            ((idx, s) for idx, s in results if s >= threshold),
-            key=lambda r: r[1],
-            reverse=True,
+    if n_candidates < 1:
+        raise ValueError(f"n_candidates must be >= 1, got {n_candidates}")
+    if max_dim > n_candidates:
+        raise ValueError(
+            f"max_dim must be <= n_candidates (={n_candidates}), got {max_dim}"
         )
 
-        best = None
-        for idx, score in candidates:
-            if filter is not None and not filter(X_train[:, idx], Y_train):
+    state: S = initial_state
+    selected: list[int] = []
+    available: set[int] = set(range(n_candidates))
+
+    for _ in range(max_dim):
+        best: tuple[int, float, S] | None = None
+        for candidate in available:
+            if filter is not None and not filter(candidate):
                 continue
-            best = (idx, score)
-            break
+            extension: Sequence[int] = selected + [candidate]
+            cand_score, cand_state = score(extension, state)
+            if cand_score < threshold:
+                continue
+            if best is None or cand_score > best[1]:
+                best = (candidate, cand_score, cand_state)
 
         if best is None:
             return
 
-        best_idx, best_score = best
-        selected_indices.append(best_idx)
-        available.remove(best_idx)
+        chosen, chosen_score, state = best
+        selected.append(chosen)
+        available.remove(chosen)
 
         yield Step(
-            index=best_idx,
-            score=best_score,
-            selected=tuple(selected_indices),
+            index=chosen,
+            score=chosen_score,
+            selected=tuple(selected),
         )

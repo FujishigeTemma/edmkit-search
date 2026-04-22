@@ -16,7 +16,9 @@ wheels/
 # otel
 otel.db
 
-# Generated images
-*.png
+# Generated results
+output/**/*.png
+output/**/*.pkl
+output/**/*.json
 
 .DS_Store

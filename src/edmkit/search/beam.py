@@ -1,122 +1,103 @@
-from collections.abc import Iterator
+"""Beam search.
 
-from edmkit.metrics import MetricFunc
-from edmkit.types import PredictFunc
+Pure function. Maintains ``beam_width`` partial paths and explores all
+extensions at each step. Each path carries its own ``state`` so adaptive
+evaluations evolve independently across beams. ``beam_width=1`` reduces
+to plain greedy.
+"""
+from __future__ import annotations
 
-from .common import prepare_data, score_subset
-from .dataset import Dataset, Subset
-from .types import FilterFn, Step
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+
+from .types import FilterFn, ScoreFunc, Step
 
 
-def beam(
-    train: Dataset | Subset,
-    validation: Dataset | Subset,
+@dataclass(frozen=True)
+class _Path[S]:
+    selected: tuple[int, ...]
+    state: S
+    score: float
+
+
+def beam[S](
+    score: ScoreFunc[S],
     *,
-    predict: PredictFunc,
-    metric: MetricFunc,
+    n_candidates: int,
+    initial_state: S,
+    max_dim: int,
+    beam_width: int,
     threshold: float = 0.0,
-    max_dim: int = 10,
-    beam_width: int = 3,
     filter: FilterFn | None = None,
 ) -> Iterator[Step]:
-    """Select variables via beam search.
+    """Beam-search up to ``max_dim`` indices from ``range(n_candidates)``.
 
-    Maintains ``beam_width`` candidate paths at each step, exploring
-    broader than greedy. ``beam_width=1`` is equivalent to greedy search.
+    Maintains the top-``beam_width`` paths by score. Each path threads
+    its own ``state`` through ``score`` so adaptive evaluations evolve
+    independently across beams. Yields the best path's latest step at
+    every dimension.
 
     Parameters
     ----------
-    train : Dataset | Subset
-        Training data. Only ``.X`` and ``.Y`` are accessed.
-    validation : Dataset | Subset
-        Validation data for evaluating candidates.
-    predict : PredictFunc
-        Prediction function ``(X, Y, Q, *, mask) -> predictions``.
-    metric : MetricFunc
-        Metric function for evaluating prediction quality.
-    threshold : float
-        Minimum score for candidate selection. Default is 0.0.
+    score : ScoreFunc[S]
+    n_candidates : int
+    initial_state : S
     max_dim : int
-        Maximum number of variables to select. Default is 10.
     beam_width : int
-        Number of candidate paths to maintain. Default is 3.
+        Number of partial paths to keep. ``1`` reduces to greedy.
+    threshold : float
     filter : FilterFn | None
-        Optional filter ``(x, Y) -> bool`` to accept/reject candidates.
 
     Yields
     ------
     Step
-        Best beam's result at each dimension step.
-    """
-    X_train, X_validation, Y_train, Y_validation = prepare_data(train, validation)
 
-    N = X_train.shape[1]
-    if max_dim > N:
-        raise ValueError(f"max_dim must be <= N (={N}), got {max_dim}")
+    Raises
+    ------
+    ValueError
+        If ``n_candidates < 1``, ``beam_width < 1``, or
+        ``max_dim > n_candidates``.
+    """
+    if n_candidates < 1:
+        raise ValueError(f"n_candidates must be >= 1, got {n_candidates}")
+    if max_dim > n_candidates:
+        raise ValueError(
+            f"max_dim must be <= n_candidates (={n_candidates}), got {max_dim}"
+        )
     if beam_width < 1:
         raise ValueError(f"beam_width must be >= 1, got {beam_width}")
 
-    # Each beam is (indices, score)
-    beams: list[tuple[list[int], float]] = [([], float("-inf"))]
+    paths: list[_Path[S]] = [
+        _Path(selected=(), state=initial_state, score=float("-inf"))
+    ]
 
-    for dim in range(1, max_dim + 1):
-        # Collect unique candidate subsets before scoring.  The optional
-        # per-column ``filter`` is applied lazily after ranking (see below)
-        # so we do not pay its cost for candidates that never make the cut.
-        unique: dict[frozenset[int], list[int]] = {}
-        for indices, _ in beams:
-            used = set(indices)
-            for candidate in range(N):
-                if candidate in used:
+    all_indices = set(range(n_candidates))
+
+    for _ in range(max_dim):
+        frontier: list[_Path[S]] = []
+        for path in paths:
+            for candidate in all_indices - set(path.selected):
+                if filter is not None and not filter(candidate):
                     continue
-                new_indices = indices + [candidate]
-                key = frozenset(new_indices)
-                if key not in unique:
-                    unique[key] = new_indices
+                extension: Sequence[int] = list(path.selected) + [candidate]
+                cand_score, cand_state = score(extension, path.state)
+                if cand_score < threshold:
+                    continue
+                frontier.append(
+                    _Path(
+                        selected=path.selected + (candidate,),
+                        state=cand_state,
+                        score=cand_score,
+                    )
+                )
 
-        if not unique:
+        if not frontier:
             return
 
-        # Score each unique subset once
-        scored = [
-            (indices, score_subset(
-                indices,
-                X_train=X_train,
-                X_validation=X_validation,
-                Y_train=Y_train,
-                Y_validation=Y_validation,
-                predict=predict,
-                metric=metric,
-            ))
-            for indices in unique.values()
-        ]
-
-        # Sort by score descending, then apply the per-column filter lazily
-        # on the newly added column (indices[-1]) — prior columns in each
-        # beam path survived filter at earlier dims.  Keep the top
-        # beam_width accepted subsets.
-        ordered = sorted(
-            ((idx, s) for idx, s in scored if s >= threshold),
-            key=lambda b: b[1],
-            reverse=True,
-        )
-
-        accepted: list[tuple[list[int], float]] = []
-        for idx, s in ordered:
-            if len(accepted) >= beam_width:
-                break
-            if filter is not None and not filter(X_train[:, idx[-1]], Y_train):
-                continue
-            accepted.append((idx, s))
-
-        if not accepted:
-            return
-
-        beams = accepted
-
-        best_indices, best_score = beams[0]
+        paths = sorted(frontier, key=lambda p: p.score, reverse=True)[:beam_width]
+        top = paths[0]
         yield Step(
-            index=best_indices[-1],
-            score=best_score,
-            selected=tuple(best_indices),
+            index=top.selected[-1],
+            score=top.score,
+            selected=top.selected,
         )
