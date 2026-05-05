@@ -1,46 +1,32 @@
-"""Candidate-evaluation factories.
+"""Candidate-evaluation factories built on a fixed-chunk batch runtime."""
 
-Each factory captures the data / predict / metric / split / weighting in
-a closure and returns a higher-order :class:`~edmkit.search.types.Evaluation`
-function. Call the returned evaluation with a strategy to run a search:
-
-    evaluation = holdout(
-        X_train=..., X_val=..., Y_train=..., Y_val=...,
-        predict=simplex_projection, metric=mean_rho,
-    )
-    steps = list(evaluation(greedy, max_dim=10))
-
-Five built-in evaluations cover the (split, weighting) cross-product:
-
-* :func:`holdout`              — single train/val split, state = ``None``
-* :func:`folds`                — k-fold aggregate, state = ``None``
-* :func:`loo`                  — leave-one-out + Theiler exclusion, state = ``None``
-* :func:`weighted_folds`       — k-fold with per-fold weighting,
-  state = per-fold scores ``(K,)``
-* :func:`weighted_timepoints`  — k-fold with per-sample weighting,
-  state = per-sample losses ``(N_total,)``
-
-Per-sample loss helpers (``mean_abs_error_per_sample`` etc.) and weight
-constructors (``softmax_weight``, ``softmax_loss_weight``) live here as
-the building blocks of the adaptive evaluations.
-"""
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from edmkit.metrics import MetricFunc
 from edmkit.simplex_projection import loo as simplex_loo
 from edmkit.splits import Fold
 from edmkit.types import PredictFunc
+from opentelemetry import trace
 
 from . import FilterFn, Step, Strategy
+from .runtime import (
+    DEFAULT_EXTENSION_CHUNK_SIZE,
+    FrontierEvaluation,
+    ScoredExtension,
+    SearchPath,
+    SplitKernelData,
+    extension_columns,
+    flatten_frontier,
+    make_split_kernel_data,
+    predict_batch,
+)
 
 
 class SampleLossFn(Protocol):
-    """``(predictions, observations) -> per-sample lower-is-better loss``."""
-
     __name__: str
 
     def __call__(
@@ -52,24 +38,10 @@ class SampleLossFn(Protocol):
 
 
 class WeightFunc(Protocol):
-    """``(state) -> weights``.
-
-    For ``weighted_folds`` the input is parent per-fold scores ``(K,)``.
-    For ``weighted_timepoints`` it is parent per-sample losses
-    ``(N_total,)``. Returned weights share the input shape and sum to one.
-    """
-
     def __call__(self, state: np.ndarray) -> np.ndarray: ...
 
 
 class Evaluation(Protocol):
-    """Higher-order candidate-evaluation plan.
-
-    Built by a factory (e.g. :func:`holdout`) that closes over the data /
-    metric / split / weighting. Given a strategy, runs the search and
-    yields :class:`Step` s.
-    """
-
     def __call__(
         self,
         strategy: Strategy,
@@ -81,7 +53,6 @@ class Evaluation(Protocol):
 
 
 type AggregateFunc = Callable[[np.ndarray], float]
-"""``(per-fold scores) -> scalar``."""
 
 
 def ensure_2d_features(X: np.ndarray, *, name: str) -> np.ndarray:
@@ -98,21 +69,6 @@ def ensure_2d_target(Y: np.ndarray, *, name: str) -> np.ndarray:
     return Y
 
 
-def predict_2d(
-    indices: Sequence[int],
-    *,
-    X_train: np.ndarray,
-    X_query: np.ndarray,
-    Y_train: np.ndarray,
-    predict: PredictFunc,
-) -> np.ndarray:
-    idx = list(indices)
-    predictions = predict(X_train[:, idx], Y_train, X_query[:, idx])
-    if predictions.ndim == 1:
-        predictions = predictions[:, None]
-    return predictions
-
-
 def validate_temperature(temperature: float) -> None:
     if temperature <= 0:
         raise ValueError(f"temperature must be positive, got {temperature}")
@@ -127,24 +83,6 @@ def softmax(values: np.ndarray, *, temperature: float, maximize: bool) -> np.nda
 
 
 def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
-    """Softmax weights that up-weight *low*-scoring folds.
-
-    Intended for :func:`weighted_folds` under a higher-is-better metric:
-    folds where the parent path scored poorly receive more weight in
-    evaluating candidate subsets. With ``state=zeros`` the returned
-    weights are uniform.
-
-    Parameters
-    ----------
-    temperature : float
-        Concentration parameter. Large values flatten toward uniform;
-        small values concentrate weight on the worst fold.
-
-    Raises
-    ------
-    ValueError
-        If ``temperature`` is not positive.
-    """
     validate_temperature(temperature)
 
     def fn(state: np.ndarray) -> np.ndarray:
@@ -154,33 +92,12 @@ def softmax_weight(*, temperature: float = 1.0) -> WeightFunc:
 
 
 def softmax_loss_weight(*, temperature: float = 1.0) -> WeightFunc:
-    """Softmax weights that up-weight *high*-loss samples.
-
-    Intended for :func:`weighted_timepoints`. With ``state=zeros`` the
-    returned weights are uniform.
-
-    Parameters
-    ----------
-    temperature : float
-        Concentration parameter. Large values flatten toward uniform;
-        small values concentrate weight on the worst sample.
-
-    Raises
-    ------
-    ValueError
-        If ``temperature`` is not positive.
-    """
     validate_temperature(temperature)
 
     def fn(state: np.ndarray) -> np.ndarray:
         return softmax(state, temperature=temperature, maximize=False)
 
     return fn
-
-
-# ---------------------------------------------------------------------------
-# Per-sample loss helpers
-# ---------------------------------------------------------------------------
 
 
 def as_matching_2d(
@@ -205,7 +122,6 @@ def mean_abs_error_per_sample(
     predictions: np.ndarray,
     observations: np.ndarray,
 ) -> np.ndarray:
-    """Mean absolute error per sample, averaged across target dimensions."""
     predictions, observations = as_matching_2d(predictions, observations)
     return np.abs(predictions - observations).mean(axis=1)
 
@@ -214,7 +130,6 @@ def mean_squared_error_per_sample(
     predictions: np.ndarray,
     observations: np.ndarray,
 ) -> np.ndarray:
-    """Mean squared error per sample, averaged across target dimensions."""
     predictions, observations = as_matching_2d(predictions, observations)
     return ((predictions - observations) ** 2).mean(axis=1)
 
@@ -223,13 +138,6 @@ def mean_negative_correlation_contribution_per_sample(
     predictions: np.ndarray,
     observations: np.ndarray,
 ) -> np.ndarray:
-    """Per-sample negative-correlation contribution (lower is better).
-
-    Each sample receives the negative of its standardised covariance
-    contribution, averaged across dimensions. Summing over samples
-    recovers the Pearson-correlation numerator, so weighting these is
-    comparable in intent to weighting fold-level correlation scores.
-    """
     predictions, observations = as_matching_2d(predictions, observations)
 
     p_centered = predictions - predictions.mean(axis=0, keepdims=True)
@@ -241,9 +149,382 @@ def mean_negative_correlation_contribution_per_sample(
     return -contributions.mean(axis=1)
 
 
-# ---------------------------------------------------------------------------
-# Evaluation factories
-# ---------------------------------------------------------------------------
+def evaluation_from_frontier(frontier: FrontierEvaluation) -> Evaluation:
+    def evaluation(
+        strategy: Strategy,
+        *,
+        max_dim: int,
+        threshold: float = 0.0,
+        filter: FilterFn | None = None,
+    ) -> Iterator[Step]:
+        return strategy(
+            frontier,
+            max_dim=max_dim,
+            threshold=threshold,
+            filter=filter,
+        )
+
+    return evaluation
+
+
+class CallbackEvaluation(FrontierEvaluation):
+    def __init__(
+        self,
+        *,
+        n_candidates: int,
+        initial_value_state: Any,
+        score_indices: Callable[[Sequence[int], Any], tuple[float, Any]],
+    ):
+        self.n_candidates = n_candidates
+        self.initial_value_state = initial_value_state
+        self.score_indices = score_indices
+
+    def initial_path(self) -> SearchPath:
+        return SearchPath(
+            selected=(),
+            value_state=self.initial_value_state,
+            score=float("-inf"),
+        )
+
+    def evaluate_frontier(
+        self,
+        paths: Sequence[SearchPath],
+        candidate_lists: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        path_ids, candidates = flatten_frontier(candidate_lists)
+        if len(candidates) == 0:
+            return []
+
+        dim = len(paths[int(path_ids[0])].selected) + 1
+        with trace.get_tracer(__name__).start_as_current_span(
+            "search.frontier",
+            attributes={
+                "dim": dim,
+                "n_extensions": len(candidates),
+                "chunk_size": 0,
+                "n_chunks": 1,
+                "n_paths": len(paths),
+                "n_splits": 0,
+                "evaluation_kind": "callback",
+            },
+        ) as span:
+            results: list[ScoredExtension] = []
+            for path_index, candidate in zip(path_ids, candidates, strict=True):
+                path = paths[int(path_index)]
+                score, next_value_state = self.score_indices(
+                    path.selected + (int(candidate),),
+                    path.value_state,
+                )
+                results.append(
+                    ScoredExtension(
+                        path_index=int(path_index),
+                        candidate=int(candidate),
+                        score=float(score),
+                        next_value_state=next_value_state,
+                    )
+                )
+            span.set_attribute("n_results", len(results))
+            return results
+
+    def advance(
+        self,
+        path: SearchPath,
+        scored: ScoredExtension,
+    ) -> SearchPath:
+        return SearchPath(
+            selected=path.selected + (scored.candidate,),
+            value_state=scored.next_value_state,
+            score=scored.score,
+        )
+
+
+class PredictFrontierEvaluation(FrontierEvaluation):
+    def __init__(
+        self,
+        *,
+        splits: Sequence[SplitKernelData],
+        predict: PredictFunc,
+        n_candidates: int,
+        chunk_size: int = DEFAULT_EXTENSION_CHUNK_SIZE,
+    ):
+        if chunk_size < 1:
+            raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
+        self.splits = tuple(splits)
+        self.predict = predict
+        self.n_candidates = n_candidates
+        self.chunk_size = chunk_size
+
+    def initial_value_state(self) -> Any:
+        return None
+
+    def initial_path(self) -> SearchPath:
+        return SearchPath(
+            selected=(),
+            value_state=self.initial_value_state(),
+            score=float("-inf"),
+        )
+
+    def evaluate_frontier(
+        self,
+        paths: Sequence[SearchPath],
+        candidate_lists: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        path_ids, candidates = flatten_frontier(candidate_lists)
+        if len(candidates) == 0:
+            return []
+
+        dim = len(paths[int(path_ids[0])].selected) + 1
+        n_chunks = (len(candidates) + self.chunk_size - 1) // self.chunk_size
+        with trace.get_tracer(__name__).start_as_current_span(
+            "search.frontier",
+            attributes={
+                "dim": dim,
+                "n_extensions": len(candidates),
+                "chunk_size": self.chunk_size,
+                "n_chunks": n_chunks,
+                "n_paths": len(paths),
+                "n_splits": len(self.splits),
+            },
+        ) as span:
+            results: list[ScoredExtension] = []
+            for start in range(0, len(candidates), self.chunk_size):
+                stop = min(len(candidates), start + self.chunk_size)
+                batch_path_ids = path_ids[start:stop]
+                batch_candidates = candidates[start:stop]
+                columns = extension_columns(paths, batch_path_ids, batch_candidates)
+                split_predictions = [
+                    predict_batch(split, columns, predict=self.predict)
+                    for split in self.splits
+                ]
+                results.extend(
+                    self.reduce_batch(
+                        paths,
+                        batch_path_ids,
+                        batch_candidates,
+                        split_predictions,
+                    )
+                )
+            span.set_attribute("n_results", len(results))
+            return results
+
+    def reduce_batch(
+        self,
+        paths: Sequence[SearchPath],
+        path_ids: np.ndarray,
+        candidates: np.ndarray,
+        split_predictions: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        raise NotImplementedError
+
+    def advance(
+        self,
+        path: SearchPath,
+        scored: ScoredExtension,
+    ) -> SearchPath:
+        return SearchPath(
+            selected=path.selected + (scored.candidate,),
+            value_state=scored.next_value_state,
+            score=scored.score,
+        )
+
+
+class HoldoutEvaluation(PredictFrontierEvaluation):
+    def __init__(
+        self,
+        *,
+        split: SplitKernelData,
+        predict: PredictFunc,
+        n_candidates: int,
+        metric: MetricFunc,
+    ):
+        super().__init__(
+            splits=[split],
+            predict=predict,
+            n_candidates=n_candidates,
+        )
+        self.metric = metric
+
+    def reduce_batch(
+        self,
+        paths: Sequence[SearchPath],
+        path_ids: np.ndarray,
+        candidates: np.ndarray,
+        split_predictions: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        del paths
+        split = self.splits[0]
+        predictions = split_predictions[0]
+        return [
+            ScoredExtension(
+                path_index=int(path_id),
+                candidate=int(candidate),
+                score=float(self.metric(predictions[i], split.y_query)),
+                next_value_state=None,
+            )
+            for i, (path_id, candidate) in enumerate(
+                zip(path_ids, candidates, strict=True)
+            )
+        ]
+
+
+class FoldsEvaluation(PredictFrontierEvaluation):
+    def __init__(
+        self,
+        *,
+        splits: Sequence[SplitKernelData],
+        predict: PredictFunc,
+        n_candidates: int,
+        metric: MetricFunc,
+        aggregate: AggregateFunc,
+    ):
+        super().__init__(
+            splits=splits,
+            predict=predict,
+            n_candidates=n_candidates,
+        )
+        self.metric = metric
+        self.aggregate = aggregate
+
+    def fold_scores_for(
+        self,
+        split_predictions: Sequence[np.ndarray],
+        batch_index: int,
+    ) -> np.ndarray:
+        per_fold = np.empty(len(self.splits))
+        for split_index, split in enumerate(self.splits):
+            per_fold[split_index] = float(
+                self.metric(split_predictions[split_index][batch_index], split.y_query)
+            )
+        return per_fold
+
+    def reduce_batch(
+        self,
+        paths: Sequence[SearchPath],
+        path_ids: np.ndarray,
+        candidates: np.ndarray,
+        split_predictions: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        del paths
+        results: list[ScoredExtension] = []
+        for i, (path_id, candidate) in enumerate(
+            zip(path_ids, candidates, strict=True)
+        ):
+            per_fold = self.fold_scores_for(split_predictions, i)
+            results.append(
+                ScoredExtension(
+                    path_index=int(path_id),
+                    candidate=int(candidate),
+                    score=float(self.aggregate(per_fold)),
+                    next_value_state=None,
+                )
+            )
+        return results
+
+
+class WeightedFoldsEvaluation(FoldsEvaluation):
+    def __init__(
+        self,
+        *,
+        splits: Sequence[SplitKernelData],
+        predict: PredictFunc,
+        n_candidates: int,
+        metric: MetricFunc,
+        weight_update: WeightFunc,
+    ):
+        super().__init__(
+            splits=splits,
+            predict=predict,
+            n_candidates=n_candidates,
+            metric=metric,
+            aggregate=lambda xs: float(np.mean(xs)),
+        )
+        self.weight_update = weight_update
+
+    def initial_value_state(self) -> Any:
+        return np.zeros(len(self.splits), dtype=np.float64)
+
+    def reduce_batch(
+        self,
+        paths: Sequence[SearchPath],
+        path_ids: np.ndarray,
+        candidates: np.ndarray,
+        split_predictions: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        results: list[ScoredExtension] = []
+        for i, (path_id, candidate) in enumerate(
+            zip(path_ids, candidates, strict=True)
+        ):
+            per_fold = self.fold_scores_for(split_predictions, i)
+            parent_state = np.asarray(paths[int(path_id)].value_state, dtype=np.float64)
+            weights = self.weight_update(parent_state)
+            results.append(
+                ScoredExtension(
+                    path_index=int(path_id),
+                    candidate=int(candidate),
+                    score=float(weights @ (per_fold - parent_state)),
+                    next_value_state=per_fold,
+                )
+            )
+        return results
+
+
+class WeightedTimepointsEvaluation(PredictFrontierEvaluation):
+    def __init__(
+        self,
+        *,
+        splits: Sequence[SplitKernelData],
+        predict: PredictFunc,
+        n_candidates: int,
+        loss: SampleLossFn,
+        weight_update: WeightFunc,
+    ):
+        super().__init__(
+            splits=splits,
+            predict=predict,
+            n_candidates=n_candidates,
+        )
+        self.loss = loss
+        self.weight_update = weight_update
+        self.n_total = sum(split.query_size for split in self.splits)
+
+    def initial_value_state(self) -> Any:
+        return np.zeros(self.n_total, dtype=np.float64)
+
+    def sample_losses_for(
+        self,
+        split_predictions: Sequence[np.ndarray],
+        batch_index: int,
+    ) -> np.ndarray:
+        return np.concatenate(
+            [
+                self.loss(split_predictions[split_index][batch_index], split.y_query)
+                for split_index, split in enumerate(self.splits)
+            ]
+        )
+
+    def reduce_batch(
+        self,
+        paths: Sequence[SearchPath],
+        path_ids: np.ndarray,
+        candidates: np.ndarray,
+        split_predictions: Sequence[np.ndarray],
+    ) -> list[ScoredExtension]:
+        results: list[ScoredExtension] = []
+        for i, (path_id, candidate) in enumerate(
+            zip(path_ids, candidates, strict=True)
+        ):
+            new_losses = self.sample_losses_for(split_predictions, i)
+            parent_state = np.asarray(paths[int(path_id)].value_state, dtype=np.float64)
+            weights = self.weight_update(parent_state)
+            results.append(
+                ScoredExtension(
+                    path_index=int(path_id),
+                    candidate=int(candidate),
+                    score=float(weights @ (parent_state - new_losses)),
+                    next_value_state=new_losses,
+                )
+            )
+        return results
 
 
 def holdout(
@@ -255,53 +536,19 @@ def holdout(
     predict: PredictFunc,
     metric: MetricFunc,
 ) -> Evaluation:
-    """Single train/validation holdout.
-
-    Parameters
-    ----------
-    X_train, X_val : np.ndarray of shape (N, M)
-    Y_train, Y_val : np.ndarray of shape (N,) or (N, D)
-    predict : PredictFunc
-    metric : MetricFunc
-        Higher must be better.
-
-    Returns
-    -------
-    Evaluation
-        Higher-order: ``evaluation(strategy, *, max_dim, ...)``.
-    """
     X_train_2d = ensure_2d_features(X_train, name="X_train")
     X_val_2d = ensure_2d_features(X_val, name="X_val")
     Y_train_2d = ensure_2d_target(Y_train, name="Y_train")
     Y_val_2d = ensure_2d_target(Y_val, name="Y_val")
-    n_candidates = X_train_2d.shape[1]
 
-    def score(indices: Sequence[int], parent_state: None) -> tuple[float, None]:
-        del parent_state
-        predictions = predict_2d(
-            indices,
-            X_train=X_train_2d, X_query=X_val_2d, Y_train=Y_train_2d,
+    return evaluation_from_frontier(
+        HoldoutEvaluation(
+            split=make_split_kernel_data(X_train_2d, X_val_2d, Y_train_2d, Y_val_2d),
             predict=predict,
+            n_candidates=X_train_2d.shape[1],
+            metric=metric,
         )
-        return float(metric(predictions, Y_val_2d)), None
-
-    def evaluation(
-        strategy: Strategy,
-        *,
-        max_dim: int,
-        threshold: float = 0.0,
-        filter: FilterFn | None = None,
-    ) -> Iterator[Step]:
-        return strategy(
-            score,
-            n_candidates=n_candidates,
-            initial_state=None,
-            max_dim=max_dim,
-            threshold=threshold,
-            filter=filter,
-        )
-
-    return evaluation
+    )
 
 
 def folds(
@@ -313,60 +560,29 @@ def folds(
     metric: MetricFunc,
     aggregate: AggregateFunc = lambda xs: float(np.mean(xs)),
 ) -> Evaluation:
-    """K-fold evaluation, aggregated per candidate subset.
-
-    Parameters
-    ----------
-    X : np.ndarray of shape (T, M)
-    Y : np.ndarray of shape (T,) or (T, D)
-    folds : list[Fold]
-    predict : PredictFunc
-    metric : MetricFunc
-    aggregate : AggregateFunc
-        ``(per-fold scores) -> scalar``. Default is the arithmetic mean.
-
-    Returns
-    -------
-    Evaluation
-    """
     X_2d = ensure_2d_features(X, name="X")
     Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
-    n_candidates = X_2d.shape[1]
 
-    def score(indices: Sequence[int], parent_state: None) -> tuple[float, None]:
-        del parent_state
-        per_fold = np.empty(len(fold_list))
-        for k, fold in enumerate(fold_list):
-            predictions = predict_2d(
-                indices,
-                X_train=X_2d[fold.train],
-                X_query=X_2d[fold.validation],
-                Y_train=Y_2d[fold.train],
-                predict=predict,
-            )
-            per_fold[k] = float(metric(predictions, Y_2d[fold.validation]))
-        return float(aggregate(per_fold)), None
-
-    def evaluation(
-        strategy: Strategy,
-        *,
-        max_dim: int,
-        threshold: float = 0.0,
-        filter: FilterFn | None = None,
-    ) -> Iterator[Step]:
-        return strategy(
-            score,
-            n_candidates=n_candidates,
-            initial_state=None,
-            max_dim=max_dim,
-            threshold=threshold,
-            filter=filter,
+    return evaluation_from_frontier(
+        FoldsEvaluation(
+            splits=[
+                make_split_kernel_data(
+                    X_2d[fold.train],
+                    X_2d[fold.validation],
+                    Y_2d[fold.train],
+                    Y_2d[fold.validation],
+                )
+                for fold in fold_list
+            ],
+            predict=predict,
+            n_candidates=X_2d.shape[1],
+            metric=metric,
+            aggregate=aggregate,
         )
-
-    return evaluation
+    )
 
 
 def loo(
@@ -376,24 +592,6 @@ def loo(
     metric: MetricFunc,
     tau: int,
 ) -> Evaluation:
-    """Leave-one-out simplex projection.
-
-    The Theiler exclusion window grows with embedding dimension as
-    ``(len(indices) - 1) * tau`` to match the original ``greedy_loo``
-    semantics.
-
-    Parameters
-    ----------
-    X : np.ndarray of shape (T, M)
-    Y : np.ndarray of shape (T,) or (T, D)
-    metric : MetricFunc
-    tau : int
-        Time delay used in the embedding.
-
-    Returns
-    -------
-    Evaluation
-    """
     X_2d = ensure_2d_features(X, name="X")
     Y_2d = ensure_2d_target(Y, name="Y")
     if tau < 0:
@@ -409,23 +607,13 @@ def loo(
             predictions = predictions[:, None]
         return float(metric(predictions, Y_2d)), None
 
-    def evaluation(
-        strategy: Strategy,
-        *,
-        max_dim: int,
-        threshold: float = 0.0,
-        filter: FilterFn | None = None,
-    ) -> Iterator[Step]:
-        return strategy(
-            score,
+    return evaluation_from_frontier(
+        CallbackEvaluation(
             n_candidates=n_candidates,
-            initial_state=None,
-            max_dim=max_dim,
-            threshold=threshold,
-            filter=filter,
+            initial_value_state=None,
+            score_indices=score,
         )
-
-    return evaluation
+    )
 
 
 def weighted_folds(
@@ -437,71 +625,29 @@ def weighted_folds(
     metric: MetricFunc,
     weight_update: WeightFunc,
 ) -> Evaluation:
-    """Adaptive: score by weighted improvement in per-fold metrics.
-
-    Path state is the parent's per-fold scores ``(K,)``. The next state
-    is the candidate's per-fold scores. Score is
-    ``weights @ (new_fold_scores - parent_fold_scores)`` where
-    ``weights = weight_update(parent_state)``. With initial state of
-    zeros and :func:`softmax_weight` (which yields uniform on zeros), the
-    first step reduces to the mean per-fold score.
-
-    Parameters
-    ----------
-    X, Y, folds, predict, metric : see :func:`folds`
-    weight_update : WeightFunc
-        Maps parent per-fold scores to weights of shape ``(K,)``.
-
-    Returns
-    -------
-    Evaluation
-    """
     X_2d = ensure_2d_features(X, name="X")
     Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
-    n_candidates = X_2d.shape[1]
-    initial_state = np.zeros(len(fold_list))
 
-    def fold_scores(indices: Sequence[int]) -> np.ndarray:
-        per = np.empty(len(fold_list))
-        for k, fold in enumerate(fold_list):
-            predictions = predict_2d(
-                indices,
-                X_train=X_2d[fold.train],
-                X_query=X_2d[fold.validation],
-                Y_train=Y_2d[fold.train],
-                predict=predict,
-            )
-            per[k] = float(metric(predictions, Y_2d[fold.validation]))
-        return per
-
-    def score(
-        indices: Sequence[int], parent_state: np.ndarray
-    ) -> tuple[float, np.ndarray]:
-        new = fold_scores(indices)
-        weights = weight_update(parent_state)
-        improvement = float(weights @ (new - parent_state))
-        return improvement, new
-
-    def evaluation(
-        strategy: Strategy,
-        *,
-        max_dim: int,
-        threshold: float = 0.0,
-        filter: FilterFn | None = None,
-    ) -> Iterator[Step]:
-        return strategy(
-            score,
-            n_candidates=n_candidates,
-            initial_state=initial_state,
-            max_dim=max_dim,
-            threshold=threshold,
-            filter=filter,
+    return evaluation_from_frontier(
+        WeightedFoldsEvaluation(
+            splits=[
+                make_split_kernel_data(
+                    X_2d[fold.train],
+                    X_2d[fold.validation],
+                    Y_2d[fold.train],
+                    Y_2d[fold.validation],
+                )
+                for fold in fold_list
+            ],
+            predict=predict,
+            n_candidates=X_2d.shape[1],
+            metric=metric,
+            weight_update=weight_update,
         )
-
-    return evaluation
+    )
 
 
 def weighted_timepoints(
@@ -514,71 +660,26 @@ def weighted_timepoints(
     loss: SampleLossFn,
     weight_update: WeightFunc,
 ) -> Evaluation:
-    """Adaptive: score by weighted reduction in per-sample losses.
-
-    Path state is the parent's concatenated per-sample losses
-    ``(N_total,)`` where ``N_total = sum(len(f.validation) for f in folds)``.
-    Score is ``weights @ (parent_state - new_losses)`` where
-    ``weights = weight_update(parent_state)``. With initial state of
-    zeros and :func:`softmax_loss_weight`, the first step is proportional
-    to ``-mean(losses)``.
-
-    Parameters
-    ----------
-    X, Y, folds, predict, metric : see :func:`folds`
-    loss : SampleLossFn
-        Per-sample lower-is-better loss aligned with ``metric``.
-    weight_update : WeightFunc
-        Maps parent per-sample losses to weights of shape ``(N_total,)``.
-
-    Returns
-    -------
-    Evaluation
-    """
     X_2d = ensure_2d_features(X, name="X")
     Y_2d = ensure_2d_target(Y, name="Y")
     if len(folds) == 0:
         raise ValueError("folds must contain at least one Fold")
     fold_list = list(folds)
-    n_candidates = X_2d.shape[1]
-    n_total = sum(len(f.validation) for f in fold_list)
-    initial_state = np.zeros(n_total)
 
-    def sample_losses(indices: Sequence[int]) -> np.ndarray:
-        chunks: list[np.ndarray] = []
-        for fold in fold_list:
-            predictions = predict_2d(
-                indices,
-                X_train=X_2d[fold.train],
-                X_query=X_2d[fold.validation],
-                Y_train=Y_2d[fold.train],
-                predict=predict,
-            )
-            chunks.append(loss(predictions, Y_2d[fold.validation]))
-        return np.concatenate(chunks)
-
-    def score(
-        indices: Sequence[int], parent_state: np.ndarray
-    ) -> tuple[float, np.ndarray]:
-        new = sample_losses(indices)
-        weights = weight_update(parent_state)
-        improvement = float(weights @ (parent_state - new))
-        return improvement, new
-
-    def evaluation(
-        strategy: Strategy,
-        *,
-        max_dim: int,
-        threshold: float = 0.0,
-        filter: FilterFn | None = None,
-    ) -> Iterator[Step]:
-        return strategy(
-            score,
-            n_candidates=n_candidates,
-            initial_state=initial_state,
-            max_dim=max_dim,
-            threshold=threshold,
-            filter=filter,
+    return evaluation_from_frontier(
+        WeightedTimepointsEvaluation(
+            splits=[
+                make_split_kernel_data(
+                    X_2d[fold.train],
+                    X_2d[fold.validation],
+                    Y_2d[fold.train],
+                    Y_2d[fold.validation],
+                )
+                for fold in fold_list
+            ],
+            predict=predict,
+            n_candidates=X_2d.shape[1],
+            loss=loss,
+            weight_update=weight_update,
         )
-
-    return evaluation
+    )

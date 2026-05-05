@@ -21,6 +21,7 @@ from hypothesis.extra.numpy import arrays
 from scipy.spatial.distance import cdist
 
 from edmkit.metrics import mae
+from edmkit.simplex_projection import simplex_projection
 from edmkit.search import (
     Dataset,
     Selection,
@@ -59,16 +60,29 @@ def dummy_predict(
     X: np.ndarray, Y: np.ndarray, Q: np.ndarray, *, mask: np.ndarray | None = None
 ) -> np.ndarray:
     """1-NN predictor for deterministic tests."""
-    dists = cdist(Q, X)
-    nearest = np.argmin(dists, axis=1)
-    return Y[nearest]
+    del mask
+    if X.ndim == 2:
+        dists = cdist(Q, X)
+        nearest = np.argmin(dists, axis=1)
+        return Y[nearest]
+    if X.ndim != 3 or Y.ndim != 3 or Q.ndim != 3:
+        raise ValueError(f"expected all inputs to be 2D or all to be 3D, got {X.ndim}, {Y.ndim}, {Q.ndim}")
+    return np.stack(
+        [dummy_predict(X[b], Y[b], Q[b]) for b in range(X.shape[0])],
+        axis=0,
+    )
 
 
 def colsum_predict(
     X: np.ndarray, Y: np.ndarray, Q: np.ndarray, *, mask: np.ndarray | None = None
 ) -> np.ndarray:
     """Cheap analytic predictor: column-sum, broadcast across Y dims."""
-    return Q.sum(axis=1, keepdims=True).repeat(Y.shape[1], axis=1)
+    del X, mask
+    if Q.ndim == 2 and Y.ndim == 2:
+        return Q.sum(axis=1, keepdims=True).repeat(Y.shape[1], axis=1)
+    if Q.ndim != 3 or Y.ndim != 3:
+        raise ValueError(f"expected Q and Y to be 2D or 3D together, got {Q.ndim} and {Y.ndim}")
+    return Q.sum(axis=2, keepdims=True).repeat(Y.shape[2], axis=2)
 
 
 def mean_abs_corr(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
@@ -402,11 +416,13 @@ class _CapturingStrategy:
         self.first_step_scores: dict[int, float] = {}
 
     def __call__(
-        self, score, *, n_candidates, initial_state, max_dim, threshold=0.0, filter=None,
+        self, evaluation, *, max_dim, threshold=0.0, filter=None,
     ):
-        for c in range(n_candidates):
-            s, _ = score([c], initial_state)
-            self.first_step_scores[c] = s
+        del max_dim, threshold, filter
+        path = evaluation.initial_path()
+        candidates = np.arange(evaluation.n_candidates, dtype=np.intp)
+        for scored in evaluation.evaluate_frontier([path], [candidates]):
+            self.first_step_scores[scored.candidate] = scored.score
         return iter(())
 
 
@@ -496,7 +512,106 @@ class TestLOO:
 
 
 # ---------------------------------------------------------------------------
-# 8. Per-sample loss helpers
+# 8. Specialized simplex frontier matches generic callback semantics
+# ---------------------------------------------------------------------------
+
+
+class TestSimplexSpecialization:
+    def test_holdout_specialization_matches_generic_wrapper(self):
+        ds = make_dataset(N=60, M=5, seed=101)
+
+        def wrapped_predict(X, Y, Q, *, mask=None):
+            return simplex_projection(X, Y, Q, mask=mask)
+
+        direct = holdout(
+            X_train=ds.X,
+            X_val=ds.X,
+            Y_train=ds.Y,
+            Y_val=ds.Y,
+            predict=simplex_projection,
+            metric=neg_mae,
+        )
+        wrapped = holdout(
+            X_train=ds.X,
+            X_val=ds.X,
+            Y_train=ds.Y,
+            Y_val=ds.Y,
+            predict=wrapped_predict,
+            metric=neg_mae,
+        )
+
+        direct_steps = list(direct(greedy, max_dim=3, threshold=-float("inf")))
+        wrapped_steps = list(wrapped(greedy, max_dim=3, threshold=-float("inf")))
+        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
+        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
+            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
+            assert actual.selected == expected.selected
+
+    def test_folds_specialization_matches_generic_wrapper(self):
+        ds = make_dataset(N=72, M=6, seed=103)
+        split = make_folds_split(len(ds.X))
+
+        def wrapped_predict(X, Y, Q, *, mask=None):
+            return simplex_projection(X, Y, Q, mask=mask)
+
+        direct = folds(
+            X=ds.X,
+            Y=ds.Y,
+            folds=split,
+            predict=simplex_projection,
+            metric=neg_mae,
+        )
+        wrapped = folds(
+            X=ds.X,
+            Y=ds.Y,
+            folds=split,
+            predict=wrapped_predict,
+            metric=neg_mae,
+        )
+
+        direct_steps = list(direct(partial(beam, beam_width=2), max_dim=3, threshold=-float("inf")))
+        wrapped_steps = list(wrapped(partial(beam, beam_width=2), max_dim=3, threshold=-float("inf")))
+        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
+        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
+            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
+            assert actual.selected == expected.selected
+
+    def test_weighted_timepoints_specialization_matches_generic_wrapper(self):
+        ds = make_dataset(N=72, M=5, seed=107)
+        split = make_folds_split(len(ds.X))
+
+        def wrapped_predict(X, Y, Q, *, mask=None):
+            return simplex_projection(X, Y, Q, mask=mask)
+
+        direct = weighted_timepoints(
+            X=ds.X,
+            Y=ds.Y,
+            folds=split,
+            predict=simplex_projection,
+            metric=neg_mae,
+            loss=mean_abs_error_per_sample,
+            weight_update=softmax_loss_weight(temperature=1.0),
+        )
+        wrapped = weighted_timepoints(
+            X=ds.X,
+            Y=ds.Y,
+            folds=split,
+            predict=wrapped_predict,
+            metric=neg_mae,
+            loss=mean_abs_error_per_sample,
+            weight_update=softmax_loss_weight(temperature=1.0),
+        )
+
+        direct_steps = list(direct(greedy, max_dim=3, threshold=-float("inf")))
+        wrapped_steps = list(wrapped(greedy, max_dim=3, threshold=-float("inf")))
+        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
+        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
+            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
+            assert actual.selected == expected.selected
+
+
+# ---------------------------------------------------------------------------
+# 9. Per-sample loss helpers
 # ---------------------------------------------------------------------------
 
 
@@ -553,7 +668,7 @@ class TestMeanNegativeCorrelationContributionPerSample:
 
 
 # ---------------------------------------------------------------------------
-# 9. Softmax weight functions
+# 10. Softmax weight functions
 # ---------------------------------------------------------------------------
 
 
@@ -582,7 +697,7 @@ class TestSoftmaxLossWeight:
 
 
 # ---------------------------------------------------------------------------
-# 10. collect()
+# 11. collect()
 # ---------------------------------------------------------------------------
 
 
@@ -611,7 +726,7 @@ class TestCollect:
 
 
 # ---------------------------------------------------------------------------
-# 11. Pickleability of strategies with partial kwargs
+# 12. Pickleability of strategies with partial kwargs
 # ---------------------------------------------------------------------------
 
 
