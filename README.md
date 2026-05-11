@@ -3,6 +3,16 @@
 Trajectory construction on an energy landscape, packaged as a library on top
 of [`edmkit`](https://github.com/FujishigeTemma/edmkit).
 
+## Install
+
+```bash
+pip install edmkit-search
+# or
+uv add edmkit-search
+```
+
+## Overview
+
 The search loop builds a trajectory step by step:
 
 1. From the current frontier (batch of `(state, context)`),
