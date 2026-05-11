@@ -32,15 +32,11 @@ class Dataset:
         transform: Transform | None = None,
     ):
         if X.ndim != 2:
-            raise ValueError(
-                f"X must be 2-dimensional (T, D_x), got shape {X.shape}"
-            )
+            raise ValueError(f"X must be 2-dimensional (T, D_x), got shape {X.shape}")
         if Y.ndim == 1:
             Y = Y[:, np.newaxis]
         if Y.ndim != 2:
-            raise ValueError(
-                f"Y must be 1D or 2D, got shape {Y.shape}"
-            )
+            raise ValueError(f"Y must be 1D or 2D, got shape {Y.shape}")
         if X.shape[0] != Y.shape[0]:
             raise ValueError(
                 f"T mismatch: X has {X.shape[0]} timesteps, Y has {Y.shape[0]}"

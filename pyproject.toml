@@ -1,40 +1,30 @@
-[build-system]
-requires = ["uv_build>=0.10.9,<0.11.0"]
-build-backend = "uv_build"
-
 [project]
 name = "edmkit-search"
 version = "0.1.0"
-description = "Add your description here"
+description = "Trajectory construction on an energy landscape for edmkit"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "dimx>=1.1.1",
-    "edmkit @ file:///Users/temma/Repositories/edmkit",
-    "line-profiler>=5.0.0",
-    "matplotlib>=3.10.8",
-    "opentelemetry-api==1.39.1",
-    "opentelemetry-exporter-otlp-proto-http==1.39.1",
-    "opentelemetry-sdk==1.39.1",
-    "polars>=1.37.1",
-    "pyarrow>=23.0.1",
-    "scipy>=1.15.1",
-    "tqdm>=4.67.3",
+    "edmkit>=0.0.7",
+    "numpy>=2.4.4",
 ]
 
 [dependency-groups]
-dev = ["hypothesis>=6.151.5", "pytest>=9.0.2", "ruff>=0.14.14", "ty>=0.0.13"]
+dev = ["hypothesis>=6.152.5", "pytest>=9.0.3", "ruff>=0.15.12", "ty>=0.0.35"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-x --tb=short"
 
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
+
 [tool.uv.build-backend]
 module-name = "edmkit.search"
 
-[tool.ty.environment]
-extra-paths = ["experiments"]
+[tool.ruff]
+exclude = [".claude"]
 
 [tool.ty.src]
 exclude = [".claude"]
-

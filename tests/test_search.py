@@ -1,742 +1,568 @@
-"""Tests for the higher-order ``edmkit.search`` API.
-
-Three orthogonal concepts are exercised independently and together:
-
-* **Strategy** — :func:`greedy`, :func:`beam`
-* **Evaluation** — :func:`holdout`, :func:`folds`, :func:`loo`,
-  :func:`weighted_folds`, :func:`weighted_timepoints`
-* **Metric** — borrowed from ``edmkit.metrics``
-"""
 from __future__ import annotations
 
-import math
-import pickle
-from functools import partial
+import importlib
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
-from hypothesis.extra.numpy import arrays
-from scipy.spatial.distance import cdist
+from edmkit.metrics import mae as metric_mae
+from edmkit.splits import Fold
 
-from edmkit.metrics import mae
-from edmkit.simplex_projection import simplex_projection
-from edmkit.search import (
-    Dataset,
-    Selection,
-    Step,
-    beam,
-    collect,
-    folds,
-    greedy,
-    holdout,
-    loo,
-    mean_abs_error_per_sample,
-    mean_negative_correlation_contribution_per_sample,
-    mean_squared_error_per_sample,
-    softmax_loss_weight,
-    softmax_weight,
-    weighted_folds,
-    weighted_timepoints,
-)
-from edmkit.splits import Fold, sliding_folds
-
-# ---------------------------------------------------------------------------
-# Fixtures and helpers
-# ---------------------------------------------------------------------------
-
-
-def make_dataset(
-    N: int = 50, M: int = 5, D: int = 1, *, seed: int = 42
-) -> Dataset:
-    rng = np.random.default_rng(seed)
-    X = rng.standard_normal((N, M))
-    Y = rng.standard_normal((N, D))
-    return Dataset(X=X, Y=Y)
-
-
-def dummy_predict(
-    X: np.ndarray, Y: np.ndarray, Q: np.ndarray, *, mask: np.ndarray | None = None
-) -> np.ndarray:
-    """1-NN predictor for deterministic tests."""
-    del mask
-    if X.ndim == 2:
-        dists = cdist(Q, X)
-        nearest = np.argmin(dists, axis=1)
-        return Y[nearest]
-    if X.ndim != 3 or Y.ndim != 3 or Q.ndim != 3:
-        raise ValueError(f"expected all inputs to be 2D or all to be 3D, got {X.ndim}, {Y.ndim}, {Q.ndim}")
-    return np.stack(
-        [dummy_predict(X[b], Y[b], Q[b]) for b in range(X.shape[0])],
-        axis=0,
-    )
+from edmkit.search import energy, neighborhood, state, strategy
+from edmkit.search.dataset import Dataset
+from edmkit.search.energy import Contexts, Energies, Energy
+from edmkit.search.neighborhood import Neighborhood
+from edmkit.search.state import States
 
 
 def colsum_predict(
-    X: np.ndarray, Y: np.ndarray, Q: np.ndarray, *, mask: np.ndarray | None = None
+    X: np.ndarray,
+    Y: np.ndarray,
+    Q: np.ndarray,
+    *,
+    mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    """Cheap analytic predictor: column-sum, broadcast across Y dims."""
     del X, mask
     if Q.ndim == 2 and Y.ndim == 2:
         return Q.sum(axis=1, keepdims=True).repeat(Y.shape[1], axis=1)
-    if Q.ndim != 3 or Y.ndim != 3:
-        raise ValueError(f"expected Q and Y to be 2D or 3D together, got {Q.ndim} and {Y.ndim}")
-    return Q.sum(axis=2, keepdims=True).repeat(Y.shape[2], axis=2)
+    if Q.ndim == 3 and Y.ndim == 3:
+        return Q.sum(axis=2, keepdims=True).repeat(Y.shape[2], axis=2)
+    raise ValueError(f"expected 2D or 3D predict arrays, got Q={Q.ndim}D, Y={Y.ndim}D")
 
 
-def mean_abs_corr(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    M = predictions.shape[1]
-    total = 0.0
-    for m in range(M):
-        p = predictions[:, m]
-        o = observations[:, m]
-        if p.std() < 1e-12 or o.std() < 1e-12:
-            continue
-        total += abs(float(np.corrcoef(p, o)[0, 1]))
-    return np.asarray(total / max(M, 1))
-
-
-def neg_mae(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    return -mae(predictions, observations)
-
-
-neg_mae.__name__ = "neg_mae"
-
-
-def make_holdout(ds: Dataset, *, predict=colsum_predict, metric=neg_mae):
-    return holdout(
-        X_train=ds.X, X_val=ds.X, Y_train=ds.Y, Y_val=ds.Y,
-        predict=predict, metric=metric,
+def arrays() -> tuple[np.ndarray, np.ndarray]:
+    X = np.array(
+        [
+            [0.0, 1.0, 2.0],
+            [1.0, 0.0, 3.0],
+            [2.0, 1.0, 0.0],
+            [3.0, 2.0, 1.0],
+            [4.0, 3.0, 2.0],
+            [5.0, 5.0, 1.0],
+        ],
+        dtype=np.float64,
     )
+    Y = np.array([[0.5], [1.5], [1.0], [2.5], [3.0], [4.0]], dtype=np.float64)
+    return X, Y
 
 
-def make_folds_split(n: int) -> list[Fold]:
-    ts = max(n // 3, 2)
-    vs = max(n // 3, 2)
-    split = sliding_folds(n, train_size=ts, validation_size=vs)
-    if not split:
-        mid = max(n // 2, 1)
-        split = [Fold(np.arange(0, mid), np.arange(mid, n))]
-    return split
+def folds_for_arrays() -> list[Fold]:
+    return [
+        Fold(train=np.array([0, 1, 2]), validation=np.array([3, 4])),
+        Fold(train=np.array([2, 3, 4]), validation=np.array([0, 5])),
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Hypothesis strategy for (Dataset, max_dim)
-# ---------------------------------------------------------------------------
-
-elems = st.floats(-1e3, 1e3, allow_nan=False, allow_infinity=False)
+def uniform(values: np.ndarray) -> np.ndarray:
+    return np.full(len(values), 1.0 / len(values), dtype=np.float64)
 
 
-@st.composite
-def search_inputs_impl(draw, *, min_m=2, max_m=8, min_n=8, max_n=30):
-    M = draw(st.integers(min_value=min_m, max_value=max_m))
-    N = draw(st.integers(min_value=min_n, max_value=max_n))
-    max_dim = draw(st.integers(min_value=1, max_value=M))
-    X = draw(arrays(np.float64, (N, M), elements=elems))
-    Y = draw(arrays(np.float64, (N, 1), elements=elems))
-    return Dataset(X=X, Y=Y), max_dim
-
-
-def search_inputs(*, min_m=2, max_m=8, min_n=8, max_n=30):
-    return search_inputs_impl(min_m=min_m, max_m=max_m, min_n=min_n, max_n=max_n)  # ty: ignore[missing-argument]
-
-
-# ---------------------------------------------------------------------------
-# Driver helpers — strategy × evaluation product
-# ---------------------------------------------------------------------------
-
-
-def make_evaluation(kind: str, ds: Dataset):
-    if kind == "holdout":
-        return make_holdout(ds)
-    split = make_folds_split(ds.X.shape[0])
-    if kind == "folds":
-        return folds(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict, metric=neg_mae,
+def per_fold_loss(
+    X: np.ndarray,
+    Y: np.ndarray,
+    folds: Sequence[Fold],
+    indices: Sequence[int],
+) -> np.ndarray:
+    columns = list(indices)
+    out = np.empty(len(folds), dtype=np.float64)
+    for f, fold in enumerate(folds):
+        prediction = colsum_predict(
+            X[fold.train][:, columns], Y[fold.train], X[fold.validation][:, columns]
         )
-    if kind == "wfolds":
-        return weighted_folds(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict,
-            metric=neg_mae, weight_update=softmax_weight(temperature=1.0),
-        )
-    if kind == "wtime":
-        return weighted_timepoints(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict,
-            metric=neg_mae, loss=mean_abs_error_per_sample,
-            weight_update=softmax_loss_weight(temperature=1.0),
-        )
-    raise ValueError(kind)
-
-
-def run_search(algo: str, ds: Dataset, max_dim: int, evaluation) -> list[Step]:
-    if algo == "greedy":
-        return list(evaluation(greedy, max_dim=max_dim, threshold=-float("inf")))
-    if algo == "beam":
-        return list(
-            evaluation(
-                partial(beam, beam_width=2),
-                max_dim=max_dim,
-                threshold=-float("inf"),
-            )
-        )
-    raise ValueError(algo)
-
-
-_ALGOS = ["greedy", "beam"]
-_KINDS = ["holdout", "folds", "wfolds", "wtime"]
-
-
-# ---------------------------------------------------------------------------
-# 1. Structural invariants — full strategy × evaluation product
-# ---------------------------------------------------------------------------
-
-
-class TestStructuralInvariants:
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_index_is_last_selected(self, algo, kind, data):
-        ds, max_dim = data
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert step.index == step.selected[-1]
-
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_no_duplicate_indices(self, algo, kind, data):
-        ds, max_dim = data
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert len(step.selected) == len(set(step.selected))
-
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_indices_in_range(self, algo, kind, data):
-        ds, max_dim = data
-        M = ds.X.shape[1]
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert all(0 <= idx < M for idx in step.selected)
-
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_selected_within_max_dim(self, algo, kind, data):
-        ds, max_dim = data
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert len(step.selected) <= max_dim
-
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_score_is_finite(self, algo, kind, data):
-        ds, max_dim = data
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert math.isfinite(step.score)
-
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("algo", _ALGOS)
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_selected_grows_by_one(self, algo, kind, data):
-        ds, max_dim = data
-        prev = 0
-        for step in run_search(algo, ds, max_dim, make_evaluation(kind, ds)):
-            assert len(step.selected) == prev + 1
-            prev = len(step.selected)
-
-
-# ---------------------------------------------------------------------------
-# 2. greedy ≡ beam(width=1)
-# ---------------------------------------------------------------------------
-
-
-class TestBeamGreedyEquivalence:
-    @given(data=search_inputs())
-    @pytest.mark.parametrize("kind", _KINDS)
-    def test_beam_width_1_equals_greedy(self, kind, data):
-        ds, max_dim = data
-        ev = make_evaluation(kind, ds)
-        g_steps = list(ev(greedy, max_dim=max_dim, threshold=-float("inf")))
-        b_steps = list(
-            ev(partial(beam, beam_width=1), max_dim=max_dim, threshold=-float("inf"))
-        )
-        assert len(g_steps) == len(b_steps)
-        for g, b in zip(g_steps, b_steps):
-            assert g.index == b.index
-            np.testing.assert_allclose(g.score, b.score, rtol=1e-10)
-            assert g.selected == b.selected
-
-
-# ---------------------------------------------------------------------------
-# 3. greedy(holdout) reference equivalence
-# ---------------------------------------------------------------------------
-
-
-def _reference_greedy_holdout(
-    ds: Dataset, max_dim: int, *, predict, metric, threshold: float
-) -> list[Step]:
-    """Naive max-by-score reference, untainted by the production loop."""
-    M = ds.X.shape[1]
-    selected: list[int] = []
-    available = list(range(M))
-    out: list[Step] = []
-    Y2d = ds.Y if ds.Y.ndim == 2 else ds.Y[:, None]
-    for _ in range(max_dim):
-        best_idx, best_score = -1, float("-inf")
-        for c in available:
-            p = predict(ds.X[:, selected + [c]], Y2d, ds.X[:, selected + [c]])
-            if p.ndim == 1:
-                p = p[:, None]
-            s = float(metric(p, Y2d))
-            if s < threshold:
-                continue
-            if s > best_score:
-                best_idx, best_score = c, s
-        if best_idx < 0:
-            return out
-        selected.append(best_idx)
-        available.remove(best_idx)
-        out.append(Step(index=best_idx, score=best_score, selected=tuple(selected)))
+        out[f] = float(metric_mae(prediction, Y[fold.validation]))
     return out
 
 
-class TestHoldoutReference:
-    def test_greedy_matches_naive_reference(self):
-        ds = make_dataset(N=50, M=5, seed=7)
-        reference = _reference_greedy_holdout(
-            ds, max_dim=4, predict=colsum_predict, metric=neg_mae,
-            threshold=-float("inf"),
+# -------------------------------------------------------------------- helpers
+
+
+def constant_energy(fn: Callable[[States], np.ndarray]) -> Energy:
+    """Energy with empty per-state contexts; energies come from `fn(states)`."""
+
+    def initial() -> Contexts:
+        return np.empty((1, 0), dtype=np.float64)
+
+    def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+        del contexts
+        energies = np.asarray(fn(states), dtype=np.float64)
+        return energies, np.empty((states.shape[0], 0), dtype=np.float64)
+
+    return Energy(initial=initial, step=step)
+
+
+def empty_neighborhood() -> Neighborhood:
+    """Neighborhood that always produces no children."""
+
+    def expand(states: States, rng: np.random.Generator) -> tuple[States, np.ndarray]:
+        del rng
+        return (
+            np.empty((0, states.shape[1] + 1), dtype=np.int64),
+            np.empty(0, dtype=np.int64),
         )
-        produced = list(
-            make_holdout(ds)(greedy, max_dim=4, threshold=-float("inf"))
-        )
-        assert len(produced) == len(reference)
-        for r, p in zip(reference, produced):
-            assert r.index == p.index
-            np.testing.assert_allclose(r.score, p.score, rtol=1e-10)
-            assert r.selected == p.selected
+
+    return expand
 
 
-# ---------------------------------------------------------------------------
-# 4. Validation errors
-# ---------------------------------------------------------------------------
+def fixed_neighborhood(perturbations: Sequence[int]) -> Neighborhood:
+    """Append each element of `perturbations` to every parent, preserving order."""
+    ps = np.asarray(perturbations, dtype=np.int64)
+
+    def expand(states: States, rng: np.random.Generator) -> tuple[States, np.ndarray]:
+        del rng
+        N = states.shape[0]
+        prefix = np.repeat(states, len(ps), axis=0)
+        suffix = np.tile(ps, N)[:, None]
+        children = np.concatenate([prefix, suffix], axis=1)
+        parents = np.repeat(np.arange(N, dtype=np.int64), len(ps))
+        return children, parents
+
+    return expand
 
 
-class TestValidation:
-    def test_max_dim_exceeds_n_candidates(self):
-        ds = make_dataset(M=3)
-        with pytest.raises(ValueError, match="max_dim"):
-            list(make_holdout(ds)(greedy, max_dim=10))
+def initial_frontier(E: Energy) -> strategy.Frontier:
+    """Single-state frontier from the empty initial state."""
+    return strategy.Frontier(
+        states=state.initial(),
+        contexts=E.initial(),
+        energies=np.array([float("inf")], dtype=np.float64),
+    )
 
-    def test_beam_width_below_1(self):
-        ds = make_dataset()
-        with pytest.raises(ValueError, match="beam_width"):
-            list(make_holdout(ds)(partial(beam, beam_width=0), max_dim=3))
 
-    def test_softmax_weight_temperature(self):
-        with pytest.raises(ValueError, match="temperature"):
-            softmax_weight(temperature=0.0)
-        with pytest.raises(ValueError, match="temperature"):
-            softmax_loss_weight(temperature=-1.0)
+# ---------------------------------------------------------------- neighborhood
 
-    def test_loo_negative_tau(self):
-        with pytest.raises(ValueError, match="tau"):
-            loo(X=np.zeros((5, 2)), Y=np.zeros(5), metric=neg_mae, tau=-1)
 
-    def test_folds_empty(self):
-        with pytest.raises(ValueError, match="folds"):
-            folds(
-                X=np.zeros((5, 2)), Y=np.zeros(5), folds=[],
-                predict=colsum_predict, metric=neg_mae,
+class TestForward:
+    def test_children_extend_parents_with_unselected_indices(self) -> None:
+        N = neighborhood.forward(6)
+        states = np.array([[1, 4]], dtype=np.int64)
+        children, parents = N(states, np.random.default_rng(0))
+
+        assert children.shape == (4, 3)
+        assert parents.shape == (4,)
+        np.testing.assert_array_equal(children[:, :2], np.broadcast_to([1, 4], (4, 2)))
+        assert set(children[:, 2].tolist()) == {0, 2, 3, 5}
+        np.testing.assert_array_equal(parents, np.zeros(4, dtype=np.int64))
+
+    def test_each_parent_expands_independently(self) -> None:
+        N = neighborhood.forward(4)
+        states = np.array([[0], [3]], dtype=np.int64)
+        children, parents = N(states, np.random.default_rng(0))
+
+        assert children.shape == (6, 2)
+        np.testing.assert_array_equal(parents, np.array([0, 0, 0, 1, 1, 1]))
+        assert set(children[:3, 1].tolist()) == {1, 2, 3}
+        assert set(children[3:, 1].tolist()) == {0, 1, 2}
+
+    def test_same_seed_gives_same_children_order(self) -> None:
+        N = neighborhood.forward(8)
+        states = np.array([[3]], dtype=np.int64)
+
+        c1, p1 = N(states, np.random.default_rng(42))
+        c2, p2 = N(states, np.random.default_rng(42))
+
+        np.testing.assert_array_equal(c1, c2)
+        np.testing.assert_array_equal(p1, p2)
+
+    def test_full_state_yields_no_children(self) -> None:
+        N = neighborhood.forward(3)
+        states = np.array([[0, 1, 2]], dtype=np.int64)
+        children, parents = N(states, np.random.default_rng(0))
+
+        assert children.shape == (0, 4)
+        assert parents.shape == (0,)
+
+    def test_empty_batch_yields_no_children(self) -> None:
+        N = neighborhood.forward(5)
+        states = np.empty((0, 2), dtype=np.int64)
+        children, parents = N(states, np.random.default_rng(0))
+
+        assert children.shape == (0, 3)
+        assert parents.shape == (0,)
+
+    def test_negative_n_raises(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            neighborhood.forward(-1)
+
+
+# ------------------------------------------------------------------- strategy
+
+
+class TestStrategy:
+    def test_greedy_equals_beam_width_one(self) -> None:
+        E = constant_energy(lambda states: states.sum(axis=1).astype(np.float64))
+        N = neighborhood.forward(5)
+
+        greedy_step = strategy.greedy(E, N)
+        beam_step = strategy.beam(E, N, width=1)
+
+        greedy_trace = [
+            f.states[0].copy()
+            for f in strategy.run(
+                initial_frontier(E),
+                greedy_step,
+                max_steps=3,
+                rng=np.random.default_rng(7),
             )
-
-
-# ---------------------------------------------------------------------------
-# 5. Threshold and filter behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestThresholdAndFilter:
-    def test_threshold_filters_to_zero(self):
-        ds = make_dataset()
-        ev = make_holdout(ds, predict=dummy_predict, metric=mean_abs_corr)
-        steps = list(ev(greedy, max_dim=5, threshold=999.0))
-        assert steps == []
-
-    def test_filter_rejects_all(self):
-        ds = make_dataset()
-        ev = make_holdout(ds, predict=dummy_predict, metric=mean_abs_corr)
-        reject_all = lambda i: False  # noqa: E731
-        reject_all.__name__ = "reject_all"
-        steps = list(
-            ev(greedy, max_dim=3, threshold=-float("inf"), filter=reject_all)
-        )
-        assert steps == []
-
-    def test_filter_blocks_specific_indices(self):
-        ds = make_dataset(M=4)
-        ev = make_holdout(ds, predict=dummy_predict, metric=mean_abs_corr)
-        blocked = {0, 1}
-        not_blocked = lambda i: i not in blocked  # noqa: E731
-        not_blocked.__name__ = "not_blocked"
-        steps = list(
-            ev(
-                partial(beam, beam_width=2),
-                max_dim=2,
-                threshold=-float("inf"),
-                filter=not_blocked,
-            )
-        )
-        for step in steps:
-            for idx in step.selected:
-                assert idx not in blocked
-
-    @given(data=search_inputs(), t_offset=st.floats(0.01, 100.0))
-    def test_threshold_monotonicity(self, data, t_offset):
-        ds, max_dim = data
-        ev = make_holdout(ds)
-        steps_lo = list(ev(greedy, max_dim=max_dim, threshold=-float("inf")))
-        steps_hi = list(ev(greedy, max_dim=max_dim, threshold=t_offset))
-        assert len(steps_lo) >= len(steps_hi)
-
-
-# ---------------------------------------------------------------------------
-# 6. Adaptive evaluation: initial-step semantics & state shape
-# ---------------------------------------------------------------------------
-
-
-class _CapturingStrategy:
-    """Runs greedy but captures the first-step score of candidate ``c=0``.
-
-    Used to verify that adaptive evaluations agree with static ones on the
-    first step when initial state is zeros + softmax → uniform weights.
-    """
-
-    def __init__(self):
-        self.first_step_scores: dict[int, float] = {}
-
-    def __call__(
-        self, evaluation, *, max_dim, threshold=0.0, filter=None,
-    ):
-        del max_dim, threshold, filter
-        path = evaluation.initial_path()
-        candidates = np.arange(evaluation.n_candidates, dtype=np.intp)
-        for scored in evaluation.evaluate_frontier([path], [candidates]):
-            self.first_step_scores[scored.candidate] = scored.score
-        return iter(())
-
-
-class TestWeightedFolds:
-    def test_first_step_uniform_matches_folds_mean(self):
-        """zeros + softmax_weight ⇒ uniform first step == folds mean."""
-        ds = make_dataset(N=60, M=4, seed=11)
-        split = make_folds_split(60)
-        ev_w = weighted_folds(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict,
-            metric=neg_mae, weight_update=softmax_weight(temperature=1.0),
-        )
-        ev_f = folds(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict, metric=neg_mae,
-        )
-        cap_w, cap_f = _CapturingStrategy(), _CapturingStrategy()
-        list(ev_w(cap_w, max_dim=1, threshold=-float("inf")))
-        list(ev_f(cap_f, max_dim=1, threshold=-float("inf")))
-        for c in range(ds.X.shape[1]):
-            np.testing.assert_allclose(
-                cap_w.first_step_scores[c],
-                cap_f.first_step_scores[c],
-                rtol=1e-10,
-            )
-
-    def test_state_evolves_to_fold_scores(self):
-        ds = make_dataset(N=60, M=4, seed=13)
-        split = make_folds_split(60)
-        ev = weighted_folds(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict,
-            metric=neg_mae, weight_update=softmax_weight(temperature=1.0),
-        )
-        # Drive through greedy and make sure two real steps run to completion.
-        steps = list(ev(greedy, max_dim=2, threshold=-float("inf")))
-        assert len(steps) == 2
-
-
-class TestWeightedTimepoints:
-    def test_first_step_uniform_matches_neg_mean_loss(self):
-        """zeros + softmax_loss_weight ⇒ first step ∝ -mean(losses)."""
-        ds = make_dataset(N=60, M=4, seed=17)
-        split = make_folds_split(60)
-        ev = weighted_timepoints(
-            X=ds.X, Y=ds.Y, folds=split, predict=colsum_predict,
-            metric=neg_mae, loss=mean_abs_error_per_sample,
-            weight_update=softmax_loss_weight(temperature=1.0),
-        )
-        cap = _CapturingStrategy()
-        list(ev(cap, max_dim=1, threshold=-float("inf")))
-        # For each candidate, the uniform-weighted improvement reduces to
-        # ``-mean(new_sample_losses)``. Recompute directly to verify.
-        for c in range(ds.X.shape[1]):
-            losses_parts = []
-            for fold in split:
-                p = colsum_predict(
-                    ds.X[fold.train][:, [c]],
-                    ds.Y[fold.train],
-                    ds.X[fold.validation][:, [c]],
-                )
-                losses_parts.append(mean_abs_error_per_sample(p, ds.Y[fold.validation]))
-            losses = np.concatenate(losses_parts)
-            expected = -float(losses.mean())
-            np.testing.assert_allclose(
-                cap.first_step_scores[c], expected, rtol=1e-6,
-            )
-
-
-# ---------------------------------------------------------------------------
-# 7. LOO evaluation
-# ---------------------------------------------------------------------------
-
-
-class TestLOO:
-    def test_runs_with_greedy(self):
-        ds = make_dataset(N=80, M=5, seed=29)
-        ev = loo(X=ds.X, Y=ds.Y, metric=neg_mae, tau=1)
-        steps = list(ev(greedy, max_dim=3, threshold=-float("inf")))
-        assert len(steps) == 3
-
-    def test_runs_with_beam(self):
-        ds = make_dataset(N=80, M=5, seed=31)
-        ev = loo(X=ds.X, Y=ds.Y, metric=neg_mae, tau=1)
-        steps = list(
-            ev(partial(beam, beam_width=2), max_dim=3, threshold=-float("inf"))
-        )
-        assert len(steps) == 3
-
-
-# ---------------------------------------------------------------------------
-# 8. Specialized simplex frontier matches generic callback semantics
-# ---------------------------------------------------------------------------
-
-
-class TestSimplexSpecialization:
-    def test_holdout_specialization_matches_generic_wrapper(self):
-        ds = make_dataset(N=60, M=5, seed=101)
-
-        def wrapped_predict(X, Y, Q, *, mask=None):
-            return simplex_projection(X, Y, Q, mask=mask)
-
-        direct = holdout(
-            X_train=ds.X,
-            X_val=ds.X,
-            Y_train=ds.Y,
-            Y_val=ds.Y,
-            predict=simplex_projection,
-            metric=neg_mae,
-        )
-        wrapped = holdout(
-            X_train=ds.X,
-            X_val=ds.X,
-            Y_train=ds.Y,
-            Y_val=ds.Y,
-            predict=wrapped_predict,
-            metric=neg_mae,
-        )
-
-        direct_steps = list(direct(greedy, max_dim=3, threshold=-float("inf")))
-        wrapped_steps = list(wrapped(greedy, max_dim=3, threshold=-float("inf")))
-        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
-        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
-            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
-            assert actual.selected == expected.selected
-
-    def test_folds_specialization_matches_generic_wrapper(self):
-        ds = make_dataset(N=72, M=6, seed=103)
-        split = make_folds_split(len(ds.X))
-
-        def wrapped_predict(X, Y, Q, *, mask=None):
-            return simplex_projection(X, Y, Q, mask=mask)
-
-        direct = folds(
-            X=ds.X,
-            Y=ds.Y,
-            folds=split,
-            predict=simplex_projection,
-            metric=neg_mae,
-        )
-        wrapped = folds(
-            X=ds.X,
-            Y=ds.Y,
-            folds=split,
-            predict=wrapped_predict,
-            metric=neg_mae,
-        )
-
-        direct_steps = list(direct(partial(beam, beam_width=2), max_dim=3, threshold=-float("inf")))
-        wrapped_steps = list(wrapped(partial(beam, beam_width=2), max_dim=3, threshold=-float("inf")))
-        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
-        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
-            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
-            assert actual.selected == expected.selected
-
-    def test_weighted_timepoints_specialization_matches_generic_wrapper(self):
-        ds = make_dataset(N=72, M=5, seed=107)
-        split = make_folds_split(len(ds.X))
-
-        def wrapped_predict(X, Y, Q, *, mask=None):
-            return simplex_projection(X, Y, Q, mask=mask)
-
-        direct = weighted_timepoints(
-            X=ds.X,
-            Y=ds.Y,
-            folds=split,
-            predict=simplex_projection,
-            metric=neg_mae,
-            loss=mean_abs_error_per_sample,
-            weight_update=softmax_loss_weight(temperature=1.0),
-        )
-        wrapped = weighted_timepoints(
-            X=ds.X,
-            Y=ds.Y,
-            folds=split,
-            predict=wrapped_predict,
-            metric=neg_mae,
-            loss=mean_abs_error_per_sample,
-            weight_update=softmax_loss_weight(temperature=1.0),
-        )
-
-        direct_steps = list(direct(greedy, max_dim=3, threshold=-float("inf")))
-        wrapped_steps = list(wrapped(greedy, max_dim=3, threshold=-float("inf")))
-        assert [s.index for s in direct_steps] == [s.index for s in wrapped_steps]
-        for actual, expected in zip(direct_steps, wrapped_steps, strict=True):
-            np.testing.assert_allclose(actual.score, expected.score, rtol=1e-5, atol=1e-5)
-            assert actual.selected == expected.selected
-
-
-# ---------------------------------------------------------------------------
-# 9. Per-sample loss helpers
-# ---------------------------------------------------------------------------
-
-
-class TestMeanAbsErrorPerSample:
-    def test_per_sample_mae(self):
-        predictions = np.array([[1.0, 3.0], [2.0, 8.0]])
-        observations = np.array([[2.0, 1.0], [5.0, 2.0]])
-        np.testing.assert_allclose(
-            mean_abs_error_per_sample(predictions, observations),
-            np.array([1.5, 4.5]),
-        )
-
-    def test_shape_mismatch(self):
-        with pytest.raises(ValueError, match="same shape"):
-            mean_abs_error_per_sample(np.ones((3, 1)), np.ones((4, 1)))
-
-
-class TestMeanSquaredErrorPerSample:
-    def test_per_sample_mse(self):
-        predictions = np.array([[1.0, 3.0], [2.0, 8.0]])
-        observations = np.array([[2.0, 1.0], [5.0, 2.0]])
-        np.testing.assert_allclose(
-            mean_squared_error_per_sample(predictions, observations),
-            np.array([2.5, 22.5]),
-        )
-
-    def test_shape_mismatch(self):
-        with pytest.raises(ValueError, match="same shape"):
-            mean_squared_error_per_sample(np.ones((3, 1)), np.ones((4, 1)))
-
-
-class TestMeanNegativeCorrelationContributionPerSample:
-    def test_perfect_correlation(self):
-        predictions = np.array([[1.0], [2.0], [3.0]])
-        observations = np.array([[1.0], [2.0], [3.0]])
-        contribs = mean_negative_correlation_contribution_per_sample(
-            predictions, observations
-        )
-        np.testing.assert_allclose(contribs, np.array([-0.5, 0.0, -0.5]), atol=1e-12)
-
-    def test_constant_input(self):
-        predictions = np.array([[1.0], [1.0], [1.0]])
-        observations = np.array([[1.0], [2.0], [3.0]])
-        contribs = mean_negative_correlation_contribution_per_sample(
-            predictions, observations
-        )
-        np.testing.assert_allclose(contribs, np.zeros(3))
-
-    def test_shape_mismatch(self):
-        with pytest.raises(ValueError, match="same shape"):
-            mean_negative_correlation_contribution_per_sample(
-                np.ones((3, 1)), np.ones((4, 1))
-            )
-
-
-# ---------------------------------------------------------------------------
-# 10. Softmax weight functions
-# ---------------------------------------------------------------------------
-
-
-class TestSoftmaxWeight:
-    def test_zero_state_is_uniform(self):
-        fn = softmax_weight(temperature=1.0)
-        w = fn(np.zeros(4))
-        np.testing.assert_allclose(w, np.full(4, 0.25), rtol=1e-10)
-
-    def test_low_temperature_concentrates_on_low_score(self):
-        fn = softmax_weight(temperature=0.01)
-        w = fn(np.array([0.8, 0.1, 0.5]))
-        assert w[1] > 0.99
-
-
-class TestSoftmaxLossWeight:
-    def test_zero_state_is_uniform(self):
-        fn = softmax_loss_weight(temperature=1.0)
-        w = fn(np.zeros(4))
-        np.testing.assert_allclose(w, np.full(4, 0.25), rtol=1e-10)
-
-    def test_low_temperature_concentrates_on_high_loss(self):
-        fn = softmax_loss_weight(temperature=0.01)
-        w = fn(np.array([0.1, 0.9, 0.5]))
-        assert w[1] > 0.99
-
-
-# ---------------------------------------------------------------------------
-# 11. collect()
-# ---------------------------------------------------------------------------
-
-
-class TestCollect:
-    def test_empty(self):
-        result = collect(iter([]))
-        assert result.indices == []
-        assert result.scores == []
-
-    def test_uses_last_selected(self):
-        steps = [
-            Step(index=2, score=0.5, selected=(2,)),
-            Step(index=5, score=0.7, selected=(2, 5)),
-            Step(index=1, score=0.8, selected=(2, 5, 1)),
         ]
-        sel = collect(steps)
-        assert sel.indices == [2, 5, 1]
-        assert sel.scores == [0.5, 0.7, 0.8]
+        beam_trace = [
+            f.states[0].copy()
+            for f in strategy.run(
+                initial_frontier(E),
+                beam_step,
+                max_steps=3,
+                rng=np.random.default_rng(7),
+            )
+        ]
 
-    def test_from_greedy(self):
-        ds = make_dataset()
-        ev = make_holdout(ds, predict=dummy_predict, metric=mean_abs_corr)
-        sel = collect(ev(greedy, max_dim=3, threshold=-float("inf")))
-        assert isinstance(sel, Selection)
-        assert len(sel.indices) == len(sel.scores)
+        assert len(greedy_trace) == len(beam_trace) == 3
+        for g, b in zip(greedy_trace, beam_trace, strict=True):
+            np.testing.assert_array_equal(g, b)
+
+    def test_run_stops_on_empty_frontier(self) -> None:
+        E = constant_energy(lambda states: np.zeros(states.shape[0]))
+        trace = list(
+            strategy.run(
+                initial_frontier(E),
+                strategy.greedy(E, empty_neighborhood()),
+                max_steps=3,
+                rng=np.random.default_rng(0),
+            )
+        )
+
+        assert trace == []
+
+    def test_run_respects_max_steps(self) -> None:
+        E = constant_energy(lambda states: np.full(states.shape[0], states.shape[1]))
+        trace = list(
+            strategy.run(
+                initial_frontier(E),
+                strategy.greedy(E, neighborhood.forward(5)),
+                max_steps=2,
+                rng=np.random.default_rng(0),
+            )
+        )
+
+        assert len(trace) == 2
+
+    def test_cutoff_filters_after_energy_evaluation(self) -> None:
+        seen_indices: list[int] = []
+
+        def fn(states: States) -> np.ndarray:
+            seen_indices.extend(states[:, -1].tolist())
+            return states[:, -1].astype(np.float64)
+
+        E = constant_energy(fn)
+        N = fixed_neighborhood([0, 1, 2])
+
+        step = strategy.beam(E, N, width=3, cutoff=1.0)
+        out = step(initial_frontier(E), np.random.default_rng(0))
+
+        assert seen_indices == [0, 1, 2]
+        assert out.states[:, -1].tolist() == [0, 1]
+
+    def test_frontier_states_expand_independently(self) -> None:
+        E = constant_energy(lambda states: states[:, -1].astype(np.float64))
+        step = strategy.beam(E, neighborhood.forward(3), width=10)
+        frontier = strategy.Frontier(
+            states=np.array([[0], [1]], dtype=np.int64),
+            contexts=np.empty((2, 0), dtype=np.float64),
+            energies=np.zeros(2, dtype=np.float64),
+        )
+
+        out = step(frontier, np.random.default_rng(1))
+
+        assert out.states.shape[1] == 2
+        rows = {tuple(row) for row in out.states.tolist()}
+        assert (0, 0) not in rows
+        assert (1, 1) not in rows
+
+    def test_beam_width_must_be_positive(self) -> None:
+        E = constant_energy(lambda states: np.zeros(states.shape[0]))
+        with pytest.raises(ValueError, match="width"):
+            strategy.beam(E, neighborhood.forward(2), width=0)
 
 
-# ---------------------------------------------------------------------------
-# 12. Pickleability of strategies with partial kwargs
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------- holdout
 
 
-class TestStrategyPickle:
-    def test_partial_beam_pickleable(self):
-        s = partial(beam, beam_width=3)
-        s2 = pickle.loads(pickle.dumps(s))
-        assert s2.keywords == {"beam_width": 3}
+class TestHoldout:
+    def test_step_matches_naive_reference(self) -> None:
+        X, Y = arrays()
+        X_train, X_val = X[:4], X[4:]
+        Y_train, Y_val = Y[:4], Y[4:]
+        states = np.array([[0, 1], [1, 2]], dtype=np.int64)
 
-    def test_partial_greedy_with_threshold_pickleable(self):
-        s = partial(greedy, threshold=-float("inf"))
-        s2 = pickle.loads(pickle.dumps(s))
-        assert s2.keywords["threshold"] == -float("inf")
+        E = energy.holdout(
+            data=Dataset(X, Y),
+            fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
+            predict=colsum_predict,
+            metric=metric_mae,
+        )
+
+        expected = [
+            float(
+                metric_mae(
+                    colsum_predict(X_train[:, list(row)], Y_train, X_val[:, list(row)]),
+                    Y_val,
+                )
+            )
+            for row in states
+        ]
+        energies, new_contexts = E.step(states, np.empty((2, 0), dtype=np.float64))
+
+        np.testing.assert_allclose(energies, expected)
+        assert new_contexts.shape == (2, 0)
+
+    def test_initial_is_empty_context(self) -> None:
+        X, Y = arrays()
+        E = energy.holdout(
+            data=Dataset(X, Y),
+            fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
+            predict=colsum_predict,
+            metric=metric_mae,
+        )
+
+        assert E.initial().shape == (1, 0)
+
+
+# ----------------------------------------------------------------------- folds
+
+
+class TestFolds:
+    def test_initial_is_zero_baseline(self) -> None:
+        X, Y = arrays()
+        E = energy.folds(
+            data=Dataset(X, Y),
+            folds=folds_for_arrays(),
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+
+        np.testing.assert_array_equal(E.initial(), np.zeros((1, 2)))
+
+    def test_first_step_with_zeros_context_equals_mean_loss(self) -> None:
+        X, Y = arrays()
+        split = folds_for_arrays()
+        E = energy.folds(
+            data=Dataset(X, Y),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+        states = np.array([[0], [1], [2]], dtype=np.int64)
+        contexts = np.zeros((3, len(split)), dtype=np.float64)
+
+        energies, new_contexts = E.step(states, contexts)
+
+        expected = [
+            float(np.mean(per_fold_loss(X, Y, split, list(row)))) for row in states
+        ]
+        np.testing.assert_allclose(energies, expected)
+        assert new_contexts.shape == (3, len(split))
+        for ctx, row in zip(new_contexts, states, strict=True):
+            np.testing.assert_allclose(ctx, per_fold_loss(X, Y, split, list(row)))
+
+    def test_two_step_delta_matches_naive_reference(self) -> None:
+        X, Y = arrays()
+        split = folds_for_arrays()
+        E = energy.folds(
+            data=Dataset(X, Y),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+
+        first = np.array([[0], [1]], dtype=np.int64)
+        _, ctxs = E.step(first, np.zeros((2, len(split)), dtype=np.float64))
+
+        second = np.array([[0, 2], [1, 2]], dtype=np.int64)
+        energies, _ = E.step(second, ctxs)
+
+        expected = []
+        for parent_loss, child in zip(ctxs, second, strict=True):
+            child_loss = per_fold_loss(X, Y, split, list(child))
+            expected.append(float(uniform(parent_loss) @ (child_loss - parent_loss)))
+
+        np.testing.assert_allclose(energies, expected)
+
+    def test_mixed_contexts_in_one_batch_evaluate_independently(self) -> None:
+        X, Y = arrays()
+        split = folds_for_arrays()
+        E = energy.folds(
+            data=Dataset(X, Y),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+
+        states = np.array([[0, 1], [1, 2]], dtype=np.int64)
+        contexts = np.array(
+            [[0.5, 0.5], [0.0, 1.0]],
+            dtype=np.float64,
+        )
+
+        energies, _ = E.step(states, contexts)
+
+        loss_a = per_fold_loss(X, Y, split, [0, 1])
+        loss_b = per_fold_loss(X, Y, split, [1, 2])
+        expected = [
+            float(uniform(contexts[0]) @ (loss_a - contexts[0])),
+            float(uniform(contexts[1]) @ (loss_b - contexts[1])),
+        ]
+        np.testing.assert_allclose(energies, expected)
+
+    def test_empty_folds_raises(self) -> None:
+        X, Y = arrays()
+        with pytest.raises(ValueError, match="folds"):
+            energy.folds(
+                data=Dataset(X, Y),
+                folds=[],
+                predict=colsum_predict,
+                metric=metric_mae,
+                weight=uniform,
+            )
+
+
+# ------------------------------------------------------------------------- loo
+
+
+class TestLoo:
+    def test_step_passes_theiler_window_to_simplex(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        loo_module = importlib.import_module("edmkit.search.energy.loo")
+        calls: list[int] = []
+
+        def fake_loo(
+            X: np.ndarray, Y: np.ndarray, *, theiler_window: int
+        ) -> np.ndarray:
+            calls.append(theiler_window)
+            return np.zeros_like(Y)
+
+        monkeypatch.setattr(loo_module.simplex_projection, "loo", fake_loo)
+        X, Y = arrays()
+        E = loo_module.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=6)
+
+        E.step(
+            np.array([[0, 1, 2]], dtype=np.int64), np.empty((1, 0), dtype=np.float64)
+        )
+
+        assert calls == [6]
+
+    def test_negative_theiler_window_raises(self) -> None:
+        X, Y = arrays()
+        with pytest.raises(ValueError, match="non-negative"):
+            energy.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=-1)
+
+
+# ------------------------------------------------------------------ trajectory
+
+
+class TestTrajectory:
+    """Plan §7 — context flows transparently through the trajectory."""
+
+    def test_context_flows_through_beam_in_lockstep_with_parents(self) -> None:
+        X, Y = arrays()
+        split = folds_for_arrays()
+        base = energy.folds(
+            data=Dataset(X, Y),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+
+        seen: list[np.ndarray] = []
+
+        def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+            seen.append(contexts.copy())
+            return base.step(states, contexts)
+
+        traced = Energy(initial=base.initial, step=step)
+        forward_N = neighborhood.forward(X.shape[1])
+        captured_parents: list[np.ndarray] = []
+
+        def N(states: States, rng: np.random.Generator) -> tuple[States, np.ndarray]:
+            children, parents = forward_N(states, rng)
+            captured_parents.append(parents.copy())
+            return children, parents
+
+        beam_step = strategy.beam(traced, N, width=2)
+        rng = np.random.default_rng(0)
+
+        first = beam_step(initial_frontier(traced), rng)
+        # E.step in step 1 received traced.initial() indexed by the parent map.
+        np.testing.assert_array_equal(seen[0], traced.initial()[captured_parents[0]])
+
+        beam_step(first, rng)
+        # E.step in step 2 received first.contexts indexed by the parent map.
+        np.testing.assert_array_equal(seen[1], first.contexts[captured_parents[1]])
+
+    def test_run_completes_with_readonly_arrays(self) -> None:
+        X, Y = arrays()
+        split = folds_for_arrays()
+        base = energy.folds(
+            data=Dataset(X, Y),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+
+        def lock(arr: np.ndarray) -> np.ndarray:
+            arr.flags.writeable = False
+            return arr
+
+        def initial() -> Contexts:
+            return lock(base.initial())
+
+        def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+            energies, new_contexts = base.step(states, contexts)
+            return energies, lock(new_contexts)
+
+        E = Energy(initial=initial, step=step)
+        N = neighborhood.forward(X.shape[1])
+
+        trace = list(
+            strategy.run(
+                initial_frontier(E),
+                strategy.greedy(E, N),
+                max_steps=2,
+                rng=np.random.default_rng(0),
+            )
+        )
+
+        assert len(trace) == 2
+
+    def test_step_is_deterministic(self) -> None:
+        X, Y = arrays()
+        E = energy.holdout(
+            data=Dataset(X, Y),
+            fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
+            predict=colsum_predict,
+            metric=metric_mae,
+        )
+        states = np.array([[0, 1], [1, 2]], dtype=np.int64)
+        contexts = np.empty((2, 0), dtype=np.float64)
+
+        e1, _ = E.step(states, contexts)
+        e2, _ = E.step(states, contexts)
+
+        np.testing.assert_array_equal(e1, e2)
+
+
+# ---------------------------------------------------------------------- weight
+
+
+class TestWeight:
+    def test_softmax(self) -> None:
+        np.testing.assert_allclose(energy.softmax()(np.zeros(4)), np.full(4, 0.25))
+        assert energy.softmax(temperature=0.01)(np.array([0.1, 0.8, 0.2]))[1] > 0.99
+
+    def test_temperature_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="temperature"):
+            energy.softmax(temperature=0)
