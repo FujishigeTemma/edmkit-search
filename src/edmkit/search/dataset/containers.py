@@ -1,3 +1,5 @@
+from functools import cached_property
+
 import numpy as np
 
 from .transforms import Transform
@@ -59,11 +61,11 @@ class Dataset:
         return x, y
 
 
-class Subset:
+class Subset(Dataset):
     """A view into a `Dataset` selected by index, without copying data.
 
-    Provides the same ``.X`` / ``.Y`` interface as `Dataset`, so both
-    types can be used interchangeably by consumers like ``greedy_iter``.
+    This is a `Dataset` subtype, so row views can be passed anywhere a
+    dataset is expected.
 
     Parameters
     ----------
@@ -77,11 +79,11 @@ class Subset:
         self.dataset = dataset
         self.indices = indices
 
-    @property
+    @cached_property
     def X(self) -> np.ndarray:
         return self.dataset.X[self.indices]
 
-    @property
+    @cached_property
     def Y(self) -> np.ndarray:
         return self.dataset.Y[self.indices]
 
