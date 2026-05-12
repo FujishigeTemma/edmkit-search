@@ -65,9 +65,7 @@ def per_fold_loss(
     columns = list(indices)
     out = np.empty(len(folds), dtype=np.float64)
     for f, fold in enumerate(folds):
-        prediction = colsum_predict(
-            X[fold.train][:, columns], Y[fold.train], X[fold.validation][:, columns]
-        )
+        prediction = colsum_predict(X[fold.train][:, columns], Y[fold.train], X[fold.validation][:, columns])
         out[f] = float(metric_mae(prediction, Y[fold.validation]))
     return out
 
@@ -243,9 +241,7 @@ class TestStrategy:
         assert trace == []
 
     def test_run_respects_max_steps(self) -> None:
-        initial, E = constant_energy(
-            lambda states: np.full(states.shape[0], states.shape[1])
-        )
+        initial, E = constant_energy(lambda states: np.full(states.shape[0], states.shape[1]))
         trace = list(
             strategy.run(
                 initial_frontier(initial),
@@ -371,9 +367,7 @@ class TestFolds:
 
         energies, new_contexts = E(states, contexts)
 
-        expected = [
-            float(np.mean(per_fold_loss(X, Y, split, list(row)))) for row in states
-        ]
+        expected = [float(np.mean(per_fold_loss(X, Y, split, list(row)))) for row in states]
         np.testing.assert_allclose(energies, expected)
         assert new_contexts.shape == (3, len(split))
         for ctx, row in zip(new_contexts, states, strict=True):
@@ -448,23 +442,17 @@ class TestFolds:
 
 
 class TestLoo:
-    def test_step_passes_theiler_window_to_simplex(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_step_passes_theiler_window_to_simplex(self, monkeypatch: pytest.MonkeyPatch) -> None:
         loo_module = importlib.import_module("edmkit.search.energy.loo")
         calls: list[int] = []
 
-        def fake_loo(
-            X: np.ndarray, Y: np.ndarray, *, theiler_window: int
-        ) -> np.ndarray:
+        def fake_loo(X: np.ndarray, Y: np.ndarray, *, theiler_window: int) -> np.ndarray:
             calls.append(theiler_window)
             return np.zeros_like(Y)
 
         monkeypatch.setattr(loo_module.simplex_projection, "loo", fake_loo)
         X, Y = arrays()
-        initial, plan = loo_module.loo(
-            data=Dataset(X, Y), metric=metric_mae, theiler_window=6
-        )
+        initial, plan = loo_module.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=6)
         E = to_energy(initial, plan)
 
         E(np.array([[0, 1, 2]], dtype=np.int64), np.empty((1, 0), dtype=np.float64))
@@ -578,9 +566,7 @@ class TestTrajectory:
 
 class TestWeight:
     def test_softmax(self) -> None:
-        np.testing.assert_allclose(
-            energy.softmax()(np.zeros((2, 4))), np.full((2, 4), 0.25)
-        )
+        np.testing.assert_allclose(energy.softmax()(np.zeros((2, 4))), np.full((2, 4), 0.25))
         assert energy.softmax(temperature=0.01)(np.array([[0.1, 0.8, 0.2]]))[0, 1] > 0.99
 
     def test_temperature_must_be_positive(self) -> None:

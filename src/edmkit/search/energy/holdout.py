@@ -23,16 +23,12 @@ def holdout(
     validation = dataset.Subset(data, fold.validation)
     initial = np.empty((1, 0), dtype=np.float64)
 
-    def plan(
-        states: States, _contexts: Contexts
-    ) -> Iterable[Callable[[], tuple[slice, np.ndarray, np.ndarray]]]:
+    def plan(states: States, _contexts: Contexts) -> Iterable[Callable[[], tuple[slice, np.ndarray, np.ndarray]]]:
         n = states.shape[0]
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
 
-            def job(
-                start: int = start, end: int = end
-            ) -> tuple[slice, np.ndarray, np.ndarray]:
+            def job(start: int = start, end: int = end) -> tuple[slice, np.ndarray, np.ndarray]:
                 size = end - start
                 idx = states[start:end]
                 X = np.ascontiguousarray(train.X[:, idx].transpose(1, 0, 2))

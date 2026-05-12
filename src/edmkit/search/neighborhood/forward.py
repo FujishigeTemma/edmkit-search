@@ -17,9 +17,7 @@ def forward(n: int) -> Neighborhood:
     if n < 0:
         raise ValueError(f"n must be non-negative, got {n}")
 
-    def expand(
-        states: States, rng: np.random.Generator
-    ) -> tuple[States, npt.NDArray[np.int64]]:
+    def expand(states: States, rng: np.random.Generator) -> tuple[States, npt.NDArray[np.int64]]:
         N, d = states.shape
         per_parent = n - d
         if N == 0 or per_parent == 0:

@@ -38,9 +38,7 @@ class Dataset:
         if Y.ndim != 2:
             raise ValueError(f"Y must be 1D or 2D, got shape {Y.shape}")
         if X.shape[0] != Y.shape[0]:
-            raise ValueError(
-                f"T mismatch: X has {X.shape[0]} timesteps, Y has {Y.shape[0]}"
-            )
+            raise ValueError(f"T mismatch: X has {X.shape[0]} timesteps, Y has {Y.shape[0]}")
 
         self.X = X.astype(np.float32)
         self.Y = Y.astype(np.float32)

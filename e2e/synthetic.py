@@ -7,8 +7,7 @@ import warnings
 # which neutralizes the thread pool below.
 if sysconfig.get_config_var("Py_GIL_DISABLED") and os.environ.get("PYTHON_GIL") != "0":
     warnings.warn(
-        "Run with PYTHON_GIL=0 to keep the GIL disabled; "
-        "otherwise the thread pool below will not scale.",
+        "Run with PYTHON_GIL=0 to keep the GIL disabled; otherwise the thread pool below will not scale.",
         stacklevel=2,
     )
 
@@ -130,26 +129,17 @@ def main() -> None:
         )
 
         mask = best_scores >= threshold
-        print(
-            f"Retaining {int(mask.sum())} out of {data.X.shape[1]} variables "
-            f"after filtering with threshold={threshold}"
-        )
+        print(f"Retaining {int(mask.sum())} out of {data.X.shape[1]} variables after filtering with threshold={threshold}")
 
         kept = np.flatnonzero(mask).tolist()
-        informative_idx = {
-            new_idx
-            for new_idx, old_idx in enumerate(kept)
-            if old_idx in informative_idx
-        }
+        informative_idx = {new_idx for new_idx, old_idx in enumerate(kept) if old_idx in informative_idx}
         data = Dataset(X=data.X[:, mask], Y=data.Y)
         train = Subset(data, outer.train)
         validation = Subset(data, outer.validation)
         print(f"Informative columns after filter: {sorted(informative_idx)}")
 
         inner = temporal_fold(len(train), train_ratio=0.75)
-        print(
-            f"Inner fold - train: {len(inner.train)}, validation: {len(inner.validation)}"
-        )
+        print(f"Inner fold - train: {len(inner.train)}, validation: {len(inner.validation)}")
 
         initial_ctx, plan = energy.holdout(
             data=train,
@@ -182,14 +172,9 @@ def main() -> None:
         print(f"  {marker} dim {i}: idx={idx:3d}, score={score:.4f}")
 
     recovered = sum(1 for idx in selected if idx in informative_idx)
-    print(
-        f"\nRecovered {recovered}/{K_signal} informative variables "
-        f"in the first {len(selected)} selections."
-    )
+    print(f"\nRecovered {recovered}/{K_signal} informative variables in the first {len(selected)} selections.")
 
-    predictions = simplex_projection(
-        train.X[:, selected], train.Y, validation.X[:, selected]
-    )
+    predictions = simplex_projection(train.X[:, selected], train.Y, validation.X[:, selected])
     score = float(mean_rho(predictions, validation.Y))
     print(f"Held-out validation score (1 - mean_rho): {score:.4f}")
 

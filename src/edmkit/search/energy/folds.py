@@ -25,22 +25,15 @@ def folds(
         raise ValueError("folds must be non-empty")
 
     n_folds = len(folds)
-    subsets = [
-        (dataset.Subset(data, f.train), dataset.Subset(data, f.validation))
-        for f in folds
-    ]
+    subsets = [(dataset.Subset(data, f.train), dataset.Subset(data, f.validation)) for f in folds]
     initial = np.zeros((1, n_folds), dtype=np.float64)
 
-    def plan(
-        states: States, contexts: Contexts
-    ) -> Iterable[Callable[[], tuple[slice, np.ndarray, np.ndarray]]]:
+    def plan(states: States, contexts: Contexts) -> Iterable[Callable[[], tuple[slice, np.ndarray, np.ndarray]]]:
         n = states.shape[0]
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
 
-            def job(
-                start: int = start, end: int = end
-            ) -> tuple[slice, np.ndarray, np.ndarray]:
+            def job(start: int = start, end: int = end) -> tuple[slice, np.ndarray, np.ndarray]:
                 size = end - start
                 idx = states[start:end]
                 metrics = np.empty((size, n_folds), dtype=np.float64)
@@ -54,9 +47,7 @@ def folds(
                     )
                 return (
                     slice(start, end),
-                    (weight(contexts[start:end]) * (metrics - contexts[start:end])).sum(
-                        axis=1
-                    ),
+                    (weight(contexts[start:end]) * (metrics - contexts[start:end])).sum(axis=1),
                     metrics,
                 )
 
