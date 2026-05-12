@@ -7,10 +7,28 @@ from edmkit.splits import Fold, temporal_fold
 
 from edmkit.search import energy, neighborhood, state, strategy
 from edmkit.search.dataset import Dataset, Subset
+from edmkit.search.energy import Contexts, Energies, Energy, Plan
+from edmkit.search.state import States
 
 
 def mean_rho(predicted: np.ndarray, observed: np.ndarray) -> np.ndarray:
     return 1.0 - _mean_rho(predicted.reshape(observed.shape), observed)
+
+
+def to_energy(initial: Contexts, plan: Plan) -> Energy:
+    c_dim = initial.shape[1]
+
+    def E(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+        n = states.shape[0]
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, c_dim), dtype=np.float64)
+        for job in plan(states, contexts):
+            sl, e, c = job()
+            energies[sl] = e
+            new_contexts[sl] = c
+        return energies, new_contexts
+
+    return E
 
 
 def test_minimal_greedy_run():
@@ -24,17 +42,18 @@ def test_minimal_greedy_run():
     train = Subset(data, outer.train)
     inner = temporal_fold(len(train), train_ratio=0.75)
 
-    E = energy.holdout(
+    initial_ctx, plan = energy.holdout(
         data=train,
         fold=Fold(train=inner.train, validation=inner.validation),
         predict=simplex_projection,
         metric=mean_rho,
     )
+    E = to_energy(initial_ctx, plan)
     N = neighborhood.forward(data.X.shape[1])
     step = strategy.greedy(E, N)
     initial = strategy.Frontier(
         states=state.initial(),
-        contexts=E.initial(),
+        contexts=initial_ctx,
         energies=np.array([float("inf")], dtype=np.float64),
     )
 

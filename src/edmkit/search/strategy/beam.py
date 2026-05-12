@@ -25,7 +25,7 @@ def beam(
                 energies=np.empty(0, dtype=np.float64),
             )
 
-        energies, contexts = E.step(children, frontier.contexts[parents])
+        energies, contexts = E(children, frontier.contexts[parents])
         kept = np.flatnonzero(energies <= cutoff)
         order = kept[np.argsort(energies[kept], kind="stable")[:width]]
         return Frontier(

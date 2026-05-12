@@ -10,7 +10,7 @@ from edmkit.splits import Fold
 
 from edmkit.search import energy, neighborhood, state, strategy
 from edmkit.search.dataset import Dataset
-from edmkit.search.energy import Contexts, Energies, Energy
+from edmkit.search.energy import Contexts, Energies, Energy, Plan
 from edmkit.search.neighborhood import Neighborhood
 from edmkit.search.state import States
 
@@ -22,7 +22,6 @@ def colsum_predict(
     *,
     mask: np.ndarray | None = None,
 ) -> np.ndarray:
-    del X, mask
     if Q.ndim == 2 and Y.ndim == 2:
         return Q.sum(axis=1, keepdims=True).repeat(Y.shape[1], axis=1)
     if Q.ndim == 3 and Y.ndim == 3:
@@ -54,7 +53,7 @@ def folds_for_arrays() -> list[Fold]:
 
 
 def uniform(values: np.ndarray) -> np.ndarray:
-    return np.full(len(values), 1.0 / len(values), dtype=np.float64)
+    return np.full(values.shape, 1.0 / values.shape[-1], dtype=np.float64)
 
 
 def per_fold_loss(
@@ -76,25 +75,38 @@ def per_fold_loss(
 # -------------------------------------------------------------------- helpers
 
 
-def constant_energy(fn: Callable[[States], np.ndarray]) -> Energy:
+def to_energy(initial: Contexts, plan: Plan) -> Energy:
+    """Drive a Plan serially into an Energy. Matches the inline loop used in callers."""
+    c_dim = initial.shape[1]
+
+    def E(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+        n = states.shape[0]
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, c_dim), dtype=np.float64)
+        for job in plan(states, contexts):
+            sl, e, c = job()
+            energies[sl] = e
+            new_contexts[sl] = c
+        return energies, new_contexts
+
+    return E
+
+
+def constant_energy(fn: Callable[[States], np.ndarray]) -> tuple[Contexts, Energy]:
     """Energy with empty per-state contexts; energies come from `fn(states)`."""
+    initial = np.empty((1, 0), dtype=np.float64)
 
-    def initial() -> Contexts:
-        return np.empty((1, 0), dtype=np.float64)
-
-    def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
-        del contexts
+    def E(states: States, _contexts: Contexts) -> tuple[Energies, Contexts]:
         energies = np.asarray(fn(states), dtype=np.float64)
         return energies, np.empty((states.shape[0], 0), dtype=np.float64)
 
-    return Energy(initial=initial, step=step)
+    return initial, E
 
 
 def empty_neighborhood() -> Neighborhood:
     """Neighborhood that always produces no children."""
 
-    def expand(states: States, rng: np.random.Generator) -> tuple[States, np.ndarray]:
-        del rng
+    def expand(states: States, _rng: np.random.Generator) -> tuple[States, np.ndarray]:
         return (
             np.empty((0, states.shape[1] + 1), dtype=np.int64),
             np.empty(0, dtype=np.int64),
@@ -107,8 +119,7 @@ def fixed_neighborhood(perturbations: Sequence[int]) -> Neighborhood:
     """Append each element of `perturbations` to every parent, preserving order."""
     ps = np.asarray(perturbations, dtype=np.int64)
 
-    def expand(states: States, rng: np.random.Generator) -> tuple[States, np.ndarray]:
-        del rng
+    def expand(states: States, _rng: np.random.Generator) -> tuple[States, np.ndarray]:
         N = states.shape[0]
         prefix = np.repeat(states, len(ps), axis=0)
         suffix = np.tile(ps, N)[:, None]
@@ -119,11 +130,11 @@ def fixed_neighborhood(perturbations: Sequence[int]) -> Neighborhood:
     return expand
 
 
-def initial_frontier(E: Energy) -> strategy.Frontier:
+def initial_frontier(initial: Contexts) -> strategy.Frontier:
     """Single-state frontier from the empty initial state."""
     return strategy.Frontier(
         states=state.initial(),
-        contexts=E.initial(),
+        contexts=initial,
         energies=np.array([float("inf")], dtype=np.float64),
     )
 
@@ -189,7 +200,7 @@ class TestForward:
 
 class TestStrategy:
     def test_greedy_equals_beam_width_one(self) -> None:
-        E = constant_energy(lambda states: states.sum(axis=1).astype(np.float64))
+        initial, E = constant_energy(lambda states: states.sum(axis=1).astype(np.float64))
         N = neighborhood.forward(5)
 
         greedy_step = strategy.greedy(E, N)
@@ -198,7 +209,7 @@ class TestStrategy:
         greedy_trace = [
             f.states[0].copy()
             for f in strategy.run(
-                initial_frontier(E),
+                initial_frontier(initial),
                 greedy_step,
                 max_steps=3,
                 rng=np.random.default_rng(7),
@@ -207,7 +218,7 @@ class TestStrategy:
         beam_trace = [
             f.states[0].copy()
             for f in strategy.run(
-                initial_frontier(E),
+                initial_frontier(initial),
                 beam_step,
                 max_steps=3,
                 rng=np.random.default_rng(7),
@@ -219,10 +230,10 @@ class TestStrategy:
             np.testing.assert_array_equal(g, b)
 
     def test_run_stops_on_empty_frontier(self) -> None:
-        E = constant_energy(lambda states: np.zeros(states.shape[0]))
+        initial, E = constant_energy(lambda states: np.zeros(states.shape[0]))
         trace = list(
             strategy.run(
-                initial_frontier(E),
+                initial_frontier(initial),
                 strategy.greedy(E, empty_neighborhood()),
                 max_steps=3,
                 rng=np.random.default_rng(0),
@@ -232,10 +243,12 @@ class TestStrategy:
         assert trace == []
 
     def test_run_respects_max_steps(self) -> None:
-        E = constant_energy(lambda states: np.full(states.shape[0], states.shape[1]))
+        initial, E = constant_energy(
+            lambda states: np.full(states.shape[0], states.shape[1])
+        )
         trace = list(
             strategy.run(
-                initial_frontier(E),
+                initial_frontier(initial),
                 strategy.greedy(E, neighborhood.forward(5)),
                 max_steps=2,
                 rng=np.random.default_rng(0),
@@ -251,17 +264,17 @@ class TestStrategy:
             seen_indices.extend(states[:, -1].tolist())
             return states[:, -1].astype(np.float64)
 
-        E = constant_energy(fn)
+        initial, E = constant_energy(fn)
         N = fixed_neighborhood([0, 1, 2])
 
         step = strategy.beam(E, N, width=3, cutoff=1.0)
-        out = step(initial_frontier(E), np.random.default_rng(0))
+        out = step(initial_frontier(initial), np.random.default_rng(0))
 
         assert seen_indices == [0, 1, 2]
         assert out.states[:, -1].tolist() == [0, 1]
 
     def test_frontier_states_expand_independently(self) -> None:
-        E = constant_energy(lambda states: states[:, -1].astype(np.float64))
+        _, E = constant_energy(lambda states: states[:, -1].astype(np.float64))
         step = strategy.beam(E, neighborhood.forward(3), width=10)
         frontier = strategy.Frontier(
             states=np.array([[0], [1]], dtype=np.int64),
@@ -277,7 +290,7 @@ class TestStrategy:
         assert (1, 1) not in rows
 
     def test_beam_width_must_be_positive(self) -> None:
-        E = constant_energy(lambda states: np.zeros(states.shape[0]))
+        _, E = constant_energy(lambda states: np.zeros(states.shape[0]))
         with pytest.raises(ValueError, match="width"):
             strategy.beam(E, neighborhood.forward(2), width=0)
 
@@ -292,12 +305,13 @@ class TestHoldout:
         Y_train, Y_val = Y[:4], Y[4:]
         states = np.array([[0, 1], [1, 2]], dtype=np.int64)
 
-        E = energy.holdout(
+        initial, plan = energy.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,
             metric=metric_mae,
         )
+        E = to_energy(initial, plan)
 
         expected = [
             float(
@@ -308,21 +322,21 @@ class TestHoldout:
             )
             for row in states
         ]
-        energies, new_contexts = E.step(states, np.empty((2, 0), dtype=np.float64))
+        energies, new_contexts = E(states, np.empty((2, 0), dtype=np.float64))
 
         np.testing.assert_allclose(energies, expected)
         assert new_contexts.shape == (2, 0)
 
     def test_initial_is_empty_context(self) -> None:
         X, Y = arrays()
-        E = energy.holdout(
+        initial, _ = energy.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,
             metric=metric_mae,
         )
 
-        assert E.initial().shape == (1, 0)
+        assert initial.shape == (1, 0)
 
 
 # ----------------------------------------------------------------------- folds
@@ -331,7 +345,7 @@ class TestHoldout:
 class TestFolds:
     def test_initial_is_zero_baseline(self) -> None:
         X, Y = arrays()
-        E = energy.folds(
+        initial, _ = energy.folds(
             data=Dataset(X, Y),
             folds=folds_for_arrays(),
             predict=colsum_predict,
@@ -339,22 +353,23 @@ class TestFolds:
             weight=uniform,
         )
 
-        np.testing.assert_array_equal(E.initial(), np.zeros((1, 2)))
+        np.testing.assert_array_equal(initial, np.zeros((1, 2)))
 
     def test_first_step_with_zeros_context_equals_mean_loss(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        E = energy.folds(
+        initial, plan = energy.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
             metric=metric_mae,
             weight=uniform,
         )
+        E = to_energy(initial, plan)
         states = np.array([[0], [1], [2]], dtype=np.int64)
         contexts = np.zeros((3, len(split)), dtype=np.float64)
 
-        energies, new_contexts = E.step(states, contexts)
+        energies, new_contexts = E(states, contexts)
 
         expected = [
             float(np.mean(per_fold_loss(X, Y, split, list(row)))) for row in states
@@ -367,19 +382,20 @@ class TestFolds:
     def test_two_step_delta_matches_naive_reference(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        E = energy.folds(
+        initial, plan = energy.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
             metric=metric_mae,
             weight=uniform,
         )
+        E = to_energy(initial, plan)
 
         first = np.array([[0], [1]], dtype=np.int64)
-        _, ctxs = E.step(first, np.zeros((2, len(split)), dtype=np.float64))
+        _, ctxs = E(first, np.zeros((2, len(split)), dtype=np.float64))
 
         second = np.array([[0, 2], [1, 2]], dtype=np.int64)
-        energies, _ = E.step(second, ctxs)
+        energies, _ = E(second, ctxs)
 
         expected = []
         for parent_loss, child in zip(ctxs, second, strict=True):
@@ -391,13 +407,14 @@ class TestFolds:
     def test_mixed_contexts_in_one_batch_evaluate_independently(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        E = energy.folds(
+        initial, plan = energy.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
             metric=metric_mae,
             weight=uniform,
         )
+        E = to_energy(initial, plan)
 
         states = np.array([[0, 1], [1, 2]], dtype=np.int64)
         contexts = np.array(
@@ -405,7 +422,7 @@ class TestFolds:
             dtype=np.float64,
         )
 
-        energies, _ = E.step(states, contexts)
+        energies, _ = E(states, contexts)
 
         loss_a = per_fold_loss(X, Y, split, [0, 1])
         loss_b = per_fold_loss(X, Y, split, [1, 2])
@@ -445,11 +462,12 @@ class TestLoo:
 
         monkeypatch.setattr(loo_module.simplex_projection, "loo", fake_loo)
         X, Y = arrays()
-        E = loo_module.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=6)
-
-        E.step(
-            np.array([[0, 1, 2]], dtype=np.int64), np.empty((1, 0), dtype=np.float64)
+        initial, plan = loo_module.loo(
+            data=Dataset(X, Y), metric=metric_mae, theiler_window=6
         )
+        E = to_energy(initial, plan)
+
+        E(np.array([[0, 1, 2]], dtype=np.int64), np.empty((1, 0), dtype=np.float64))
 
         assert calls == [6]
 
@@ -468,21 +486,21 @@ class TestTrajectory:
     def test_context_flows_through_beam_in_lockstep_with_parents(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        base = energy.folds(
+        initial, plan = energy.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
             metric=metric_mae,
             weight=uniform,
         )
+        base = to_energy(initial, plan)
 
         seen: list[np.ndarray] = []
 
-        def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+        def traced(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
             seen.append(contexts.copy())
-            return base.step(states, contexts)
+            return base(states, contexts)
 
-        traced = Energy(initial=base.initial, step=step)
         forward_N = neighborhood.forward(X.shape[1])
         captured_parents: list[np.ndarray] = []
 
@@ -494,42 +512,41 @@ class TestTrajectory:
         beam_step = strategy.beam(traced, N, width=2)
         rng = np.random.default_rng(0)
 
-        first = beam_step(initial_frontier(traced), rng)
-        # E.step in step 1 received traced.initial() indexed by the parent map.
-        np.testing.assert_array_equal(seen[0], traced.initial()[captured_parents[0]])
+        first = beam_step(initial_frontier(initial), rng)
+        # E in step 1 received initial indexed by the parent map.
+        np.testing.assert_array_equal(seen[0], initial[captured_parents[0]])
 
         beam_step(first, rng)
-        # E.step in step 2 received first.contexts indexed by the parent map.
+        # E in step 2 received first.contexts indexed by the parent map.
         np.testing.assert_array_equal(seen[1], first.contexts[captured_parents[1]])
 
     def test_run_completes_with_readonly_arrays(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        base = energy.folds(
+        base_initial, base_plan = energy.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
             metric=metric_mae,
             weight=uniform,
         )
+        base = to_energy(base_initial, base_plan)
 
         def lock(arr: np.ndarray) -> np.ndarray:
             arr.flags.writeable = False
             return arr
 
-        def initial() -> Contexts:
-            return lock(base.initial())
+        initial = lock(base_initial.copy())
 
-        def step(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
-            energies, new_contexts = base.step(states, contexts)
+        def E(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+            energies, new_contexts = base(states, contexts)
             return energies, lock(new_contexts)
 
-        E = Energy(initial=initial, step=step)
         N = neighborhood.forward(X.shape[1])
 
         trace = list(
             strategy.run(
-                initial_frontier(E),
+                initial_frontier(initial),
                 strategy.greedy(E, N),
                 max_steps=2,
                 rng=np.random.default_rng(0),
@@ -540,17 +557,18 @@ class TestTrajectory:
 
     def test_step_is_deterministic(self) -> None:
         X, Y = arrays()
-        E = energy.holdout(
+        initial, plan = energy.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,
             metric=metric_mae,
         )
+        E = to_energy(initial, plan)
         states = np.array([[0, 1], [1, 2]], dtype=np.int64)
         contexts = np.empty((2, 0), dtype=np.float64)
 
-        e1, _ = E.step(states, contexts)
-        e2, _ = E.step(states, contexts)
+        e1, _ = E(states, contexts)
+        e2, _ = E(states, contexts)
 
         np.testing.assert_array_equal(e1, e2)
 
@@ -560,8 +578,10 @@ class TestTrajectory:
 
 class TestWeight:
     def test_softmax(self) -> None:
-        np.testing.assert_allclose(energy.softmax()(np.zeros(4)), np.full(4, 0.25))
-        assert energy.softmax(temperature=0.01)(np.array([0.1, 0.8, 0.2]))[1] > 0.99
+        np.testing.assert_allclose(
+            energy.softmax()(np.zeros((2, 4))), np.full((2, 4), 0.25)
+        )
+        assert energy.softmax(temperature=0.01)(np.array([[0.1, 0.8, 0.2]]))[0, 1] > 0.99
 
     def test_temperature_must_be_positive(self) -> None:
         with pytest.raises(ValueError, match="temperature"):
