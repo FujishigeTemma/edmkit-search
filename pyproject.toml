@@ -1,6 +1,6 @@
 [project]
 name = "edmkit-search"
-version = "0.0.1a1"
+version = "0.0.1a2"
 description = "Trajectory construction on an energy landscape for edmkit"
 authors = [{ name = "FUJISHIGE TEMMA", email = "tenma.x0@gmail.com" }]
 license = "MIT"
