@@ -13,7 +13,7 @@ wheels = [
 
 [[package]]
 name = "edmkit"
-version = "0.0.8"
+version = "0.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kdtree-rs" },
@@ -21,14 +21,14 @@ dependencies = [
     { name = "scipy" },
     { name = "tinygrad" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/b7/2edd8ea01085dfbc244ac3d34028983acbbfbbdd09c201aaf6869a2880b5/edmkit-0.0.8.tar.gz", hash = "sha256:8e39eef56dea3c2818db9cab6666e7cbfe71ce712b3e5859cddbaec28de19b46", size = 15595, upload-time = "2026-05-12T07:18:00.904Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/39/fa/5e89bc4d5cbb333d4fe917e1dd06ac5d806bb315aaa3d034b22ef8d87892/edmkit-0.0.9.tar.gz", hash = "sha256:f0e542b1b07ab6c075e28d16e6af2eae011e1b7ac164abbc4331e343120bf505", size = 15542, upload-time = "2026-05-19T06:22:21.155Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/d1/2f8edc1ffbdd531aadaed8ffe94cf9122b7a85cbf4495fb5c3c167587ab3/edmkit-0.0.8-py3-none-any.whl", hash = "sha256:85bf1949bd70cfa1640ee007ad230cfb0c214cef06eae4e491fbf022204b00be", size = 22510, upload-time = "2026-05-12T07:18:01.648Z" },
+    { url = "https://files.pythonhosted.org/packages/70/3c/5515c209bf254f317a29bf375a6fd9c0519883a29d6aa9bb7c1bad7ffc89/edmkit-0.0.9-py3-none-any.whl", hash = "sha256:d86cbadf9d08468064981c167fab0c95528b5f956c7e80af4810a1e0449393ed", size = 22451, upload-time = "2026-05-19T06:22:19.909Z" },
 ]
 
 [[package]]
 name = "edmkit-search"
-version = "0.0.1a1"
+version = "0.0.1a2"
 source = { editable = "." }
 dependencies = [
     { name = "edmkit" },
@@ -45,7 +45,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "edmkit", specifier = ">=0.0.8" },
+    { name = "edmkit", specifier = ">=0.0.9" },
     { name = "numpy", specifier = ">=2.4.4" },
 ]
 
