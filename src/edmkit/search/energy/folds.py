@@ -23,7 +23,7 @@ def folds(
 ) -> tuple[Contexts, Plan]:
     """Build a multi-fold `Plan` that scores each state as a weighted improvement over the previous step.
 
-    Each state is scored on every fold to obtain a per-fold metric
+    Each state is scored on every fold to produce a per-fold metric
     vector. The energy reported for the state is the ``weight``-ed sum
     of ``(metric - previous_metric)`` across folds, so the search is
     driven by the *delta* relative to the parent state. The per-fold
@@ -31,8 +31,11 @@ def folds(
 
     The weighting function (e.g. `softmax`) is applied to the
     incoming contexts and decides how strongly each fold contributes
-    to the energy — making this a per-fold attention mechanism over
-    the search trajectory.
+    to the energy — a per-fold attention mechanism over the search
+    trajectory. A low-temperature softmax focuses energy on the folds
+    where the parent state is already strongest, penalizing regression
+    there; a high-temperature softmax tends toward an unweighted mean
+    across folds.
 
     Parameters
     ----------
@@ -63,6 +66,36 @@ def folds(
     ------
     ValueError
         If ``folds`` is empty.
+
+    Examples
+    --------
+    ```python
+    from edmkit.metrics import mean_rho
+    from edmkit.simplex_projection import simplex_projection
+    from edmkit.splits import sliding_folds
+
+    from edmkit.search import energy
+
+
+    def corr(predictions, observations):  # strategies minimize energy
+        return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+    inner_folds = sliding_folds(
+        train.X.shape[0],
+        train_size=int(train.X.shape[0] * 0.4),
+        validation_size=int(train.X.shape[0] * 0.2),
+        stride=int(train.X.shape[0] * 0.2),
+    )
+
+    initial_context, plan = energy.folds(
+        data=train,
+        folds=inner_folds,
+        predict=simplex_projection,
+        metric=corr,
+        weight=energy.weight.softmax(temperature=1.0),
+    )
+    ```
     """
     if len(folds) == 0:
         raise ValueError("folds must be non-empty")

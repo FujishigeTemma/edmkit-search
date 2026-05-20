@@ -1,7 +1,7 @@
 """Smoke tests for importability and one minimal success path per public surface."""
 
 import numpy as np
-from edmkit.metrics import mean_rho as _mean_rho
+from edmkit.metrics import mean_rho
 from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import Fold, temporal_fold
 
@@ -11,8 +11,8 @@ from edmkit.search.energy import Contexts, Energies, Energy, Plan
 from edmkit.search.state import States
 
 
-def mean_rho(predicted: np.ndarray, observed: np.ndarray) -> np.ndarray:
-    return 1.0 - _mean_rho(predicted.reshape(observed.shape), observed)
+def corr(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
 
 
 def to_energy(initial: Contexts, plan: Plan) -> Energy:
@@ -38,15 +38,15 @@ def test_minimal_greedy_run():
     Y = X[:, :1] + 0.1 * rng.standard_normal((T, 1))
 
     data = Dataset(X=X, Y=Y)
-    outer = temporal_fold(len(data), train_ratio=0.8)
+    outer = temporal_fold(len(data), 0.8)
     train = Subset(data, outer.train)
-    inner = temporal_fold(len(train), train_ratio=0.75)
+    inner = temporal_fold(len(train), 0.75)
 
     initial_ctx, plan = energy.holdout(
         data=train,
         fold=Fold(train=inner.train, validation=inner.validation),
         predict=simplex_projection,
-        metric=mean_rho,
+        metric=corr,
     )
     E = to_energy(initial_ctx, plan)
     N = neighborhood.forward(data.X.shape[1])

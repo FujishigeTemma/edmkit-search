@@ -23,7 +23,8 @@ def loo(
     ``data.X`` is used as the library for simplex-projection LOO; each
     library point is predicted from its in-library neighbours
     (excluding temporally close points via the Theiler window), and
-    the predictions are scored against ``data.Y`` with ``metric``.
+    the predictions are scored against ``data.Y`` with ``metric``. No
+    holdout fold is consumed — useful when training data is scarce.
 
     Parameters
     ----------
@@ -52,6 +53,25 @@ def loo(
     ------
     ValueError
         If ``theiler_window`` is negative.
+
+    Examples
+    --------
+    ```python
+    from edmkit.metrics import mean_rho
+
+    from edmkit.search import energy
+
+
+    def corr(predictions, observations):  # strategies minimize energy
+        return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+    initial_context, plan = energy.loo(
+        data=train,
+        metric=corr,
+        theiler_window=0,
+    )
+    ```
     """
     if theiler_window < 0:
         raise ValueError("theiler_window must be non-negative")

@@ -1,63 +1,70 @@
 ---
 title: Dataset
-description: Time-series containers and on-the-fly transforms.
+description: The (X, Y) container, the forecasting-horizon convention, and non-copying subsets.
 ---
 
-A `Dataset` is the input arm of a search. It holds an `(T, D_x)` input array `X`, a target array `Y`, and an optional `Transform` applied lazily at sample-access time.
+A `Dataset` holds an `(T, D_x)` input array `X`, a target array `Y` aligned along the same time axis, and an optional `Transform` applied lazily at sample access. A `Subset` is a non-copying view used to carve fold arms — train and validation arms share underlying storage, so two-level folds cost essentially nothing.
 
-## Basics
+If you don't need a transform, treat `Dataset` as a thin shape-checked pair.
+
+## Basic usage
 
 ```python
+import numpy as np
 from edmkit.search.dataset import Dataset
 
-data = Dataset(X=X_full, Y=Y_full)
-x, y = data[0]            # one sample
-n   = len(data)           # T
+X = np.random.default_rng(0).standard_normal((1000, 8))   # T=1000, D_x=8
+Y = X[:, :1]                                              # T=1000, D_y=1
+
+data = Dataset(X=X, Y=Y)
+x, y = data[0]            # one sample, transform applied if any
+n   = len(data)           # T = 1000
 ```
 
-`X` must be 2D. `Y` may be 1D or 2D; a 1D `Y` is auto-promoted to `(T, 1)` so downstream code can treat the target as uniformly 2D. Both arrays are cast to `float32` on construction.
+`X` must be 2D `(T, D_x)`. `Y` may be 1D `(T,)` or 2D `(T, D_y)`; a 1D `Y` is auto-promoted. Both arrays are cast to `float32` on construction. Mismatched shapes raise `ValueError`.
 
-## Subsets
+## The forecasting-horizon shift
 
-A `Subset` is a non-copying view into a `Dataset` restricted to a 1D integer index array. It *is* a `Dataset` (subclass), so it can be passed wherever a dataset is expected — for example, as the train or validation arm of a `Fold`:
+To predict `Y` at `t + n_ahead` from `X` at `t`, shift the arrays before constructing the `Dataset`:
+
+```python
+n_ahead = 1
+T = X_full.shape[0]
+data = Dataset(X=X_full[:T - n_ahead], Y=Y_full[n_ahead:])
+```
+
+After the shift, `data.X[t]` and `data.Y[t]` are `X_full[t]` and `Y_full[t + n_ahead]`. The dataset length is `T - n_ahead`. For nowcasting, pass `X_full` and `Y_full` directly.
+
+:::caution
+Apply the shift **before** any fold split. Splitting first and then shifting inside each arm leaks future information across the fold boundary.
+:::
+
+## Subsets are fold arms
+
+A `Subset` is a non-copying view restricted to a 1D integer index array. It *is* a `Dataset` (subclass), so it can be passed wherever a dataset is expected:
 
 ```python
 from edmkit.search.dataset import Subset
 from edmkit.splits import temporal_fold
 
-fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
-train      = Subset(data, fold1.train)
-validation = Subset(data, fold1.validation)
+outer = temporal_fold(data.X.shape[0], 0.8)
+train      = Subset(data, outer.train)
+validation = Subset(data, outer.validation)
 ```
 
-`Subset.X` and `Subset.Y` are materialized lazily via `@cached_property`, so a subset that is never accessed costs only the index array.
+`Subset.X` and `Subset.Y` are materialized lazily via `@cached_property`, so an unused subset costs only the index array. This makes the [two-level fold pattern](/edmkit-search/concepts/validation/) cheap.
+
+[`edmkit.splits`](https://fujishigetemma.github.io/edmkit/reference/splits/) provides the index generators:
+
+- `temporal_fold(n, train_ratio)` — one chronological split.
+- `sliding_folds(n, train_size, validation_size, stride)` — a sequence of fixed-size windows, used by `energy.folds`.
+- `expanding_folds(...)` — a sequence with a growing train window.
 
 ## Transforms
 
-A `Transform` is just a closure `(x, y) -> (x', y')`. It is applied per-sample at `__getitem__` time, so transforms with internal randomness (data augmentation) see fresh noise on every pass.
+A `Transform` is a closure `(x, y) -> (x', y')` applied at `__getitem__`. The shipped transforms are `zscore_normalize`, `gaussian_noise`, and `compose`.
 
-Two built-in factories are provided:
+:::note[Transforms do not run during scoring]
+The built-in energies read `Dataset.X` and `Dataset.Y` directly, so transforms affect only downstream code that iterates sample by sample. To affect the energy, apply normalization before constructing the `Dataset`.
+:::
 
-```python
-from edmkit.search.dataset import compose, gaussian_noise, zscore_normalize
-
-normalize = zscore_normalize(X_train, target="x")  # closes over train-set stats
-augment   = gaussian_noise(sigma=0.05)
-transform = compose(normalize, augment)            # left-to-right
-
-data = Dataset(X, Y, transform=transform)
-```
-
-- `zscore_normalize(data, target=...)` computes mean and standard deviation once over the leading axes of `data` (`(T, D)` or `(N, T, D)`) and bakes them into the closure. `target` is `"x"`, `"y"`, or `"both"`.
-- `gaussian_noise(sigma, rng)` perturbs only the input arm. Pass a seeded `Generator` for reproducibility.
-- `compose(*transforms)` left-folds — the first transform's output feeds the second, and so on.
-
-## Why a Class and Not Just Arrays?
-
-The bare arrays `X` and `Y` would have worked. The `Dataset` wrapper exists to:
-
-1. Validate shape contracts once, at construction time.
-2. Give `Subset` somewhere to live so train/validation arms can share the underlying storage by reference.
-3. Provide a hook (`transform`) that energies can rely on for on-the-fly augmentation without re-implementing it everywhere.
-
-If you do not need a transform, treating `Dataset` as a thin shape-checked pair is fine.

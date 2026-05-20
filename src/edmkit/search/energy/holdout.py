@@ -58,17 +58,23 @@ def holdout(
     from concurrent.futures import ThreadPoolExecutor
 
     import numpy as np
+    from edmkit.metrics import mean_rho
     from edmkit.simplex_projection import simplex_projection
     from edmkit.splits import temporal_fold
 
     from edmkit.search import energy, state
 
-    fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+
+    def corr(predictions, observations):  # strategies minimize energy
+        return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+    fold2 = temporal_fold(train.X.shape[0], 0.75)
     initial_context, plan = energy.holdout(
         data=train,
         fold=fold2,
         predict=simplex_projection,
-        metric=mean_rho,  # 1 - rho, lower is better
+        metric=corr,
         batch_size=64,
     )
 

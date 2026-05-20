@@ -1,9 +1,9 @@
 ---
 title: edmkit-search
-description: Trajectory construction on an energy landscape, packaged as a library on top of edmkit
+description: Select the predictive subset of a multivariate time series with empirical dynamic modeling.
 template: splash
 hero:
-  tagline: A small Python library for building search trajectories on an energy landscape — variable selection, embedding search, and other combinatorial problems framed as state expansion plus scoring.
+  tagline: Which subset of variables actually predicts your forecast target? Search on an energy landscape — swap the scorer, expander, and selector independently.
   actions:
     - text: Getting Started
       link: /edmkit-search/getting-started/
@@ -17,69 +17,57 @@ hero:
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 
+## The problem
+
+You have a multivariate time series `X` of shape `(T, D)` and a target `Y` you want to predict from `X`. The question is *not* "which model fits `Y` best?" but **which subset of columns of `X` carries the predictive information about `Y`?**
+
+This question recurs throughout empirical dynamic modeling (EDM): identifying state-space coordinates, ranking causal drivers, pruning a high-dimensional candidate pool. New to EDM? Start with [edmkit's *What is EDM?*](https://fujishigetemma.github.io/edmkit/concepts/edm/).
+
+edmkit-search turns the subset question into one loop on top of [`edmkit`](https://github.com/FujishigeTemma/edmkit)'s batched simplex projection and S-Map: grow column subsets, score each by out-of-sample predictive skill, keep the best survivors, and inspect the train-versus-validation curve.
+
+## Three orthogonal pieces
+
+The loop decomposes into three plain callables. Swap any one and the other two keep working.
+
+| Axis | What it controls | Built-ins |
+| ---- | ---------------- | --------- |
+| **Neighborhood** | how each state expands into children | `forward(n)` |
+| **Energy** | how children are scored | `holdout`, `loo`, `folds` |
+| **Strategy** | which children survive each step | `greedy`, `beam(width=W)` |
+
+A `Dataset` wraps `(X, Y)`. `state.initial()` seeds the search at the empty subset. `strategy.run` drives the loop and yields one frontier per step — the trajectory itself is the output.
+
 ## Why edmkit-search?
 
 <CardGrid>
-  <Card title="One loop, four pieces" icon="puzzle">
-    State, Neighborhood, Energy, Strategy. Snap them together — there is no framework code between
-    you and the search.
+  <Card title="Predictive skill is the score" icon="seti:python">
+    The score of a subset is its cross-validated forecast error — no proxy
+    objectives.
   </Card>
-  <Card title="Built on edmkit" icon="seti:python">
-    Reuses edmkit's batched simplex projection, S-Map, cross-validation splits, and metric
-    functions. Selection problems framed as EDM prediction skill come together naturally.
+  <Card title="No base classes" icon="puzzle">
+    Three function signatures. A custom expansion rule, scorer, or selection
+    policy drops in without subclassing.
   </Card>
   <Card title="Parallelism is yours" icon="setting">
-    Energies expose a `Plan` of independent jobs. Run them sequentially, on a thread pool, or
-    however you like — the search loop does not care.
+    Energies expose a `Plan` of independent jobs. Run them on whichever
+    executor you like — the library never imports `concurrent.futures`.
   </Card>
-  <Card title="Vectorized" icon="rocket">
-    States, contexts, and energies are plain ndarrays. Batches of candidates are scored in a
-    single call.
+  <Card title="Trajectories, not just answers" icon="rocket">
+    Plotting training energy against held-out validation across steps is the
+    canonical diagnostic, and tells you where to stop.
   </Card>
 </CardGrid>
 
-## Quick Example
+## What you'll do in 10 minutes
 
-```python
-import os
-from concurrent.futures import ThreadPoolExecutor
+The [Getting Started](/edmkit-search/getting-started/) tutorial walks through a complete experiment on a Lorenz-96 toy dataset in seven steps:
 
-import numpy as np
-from edmkit.simplex_projection import simplex_projection
-from edmkit.splits import temporal_fold
+1. Frame "higher is better" predictive skill as an energy ("lower is better").
+2. Wrap the data and carve an **outer fold** for honest evaluation.
+3. Pre-filter weak candidates with [`edmkit.embedding.scan`](https://fujishigetemma.github.io/edmkit/reference/embedding/).
+4. Build the energy from an **inner fold** of the training arm.
+5. Compose neighborhood + strategy and run the search.
+6. Read the training-vs-validation trace as a diagnostic curve.
+7. Sweep `(metric, energy, strategy)` configurations and compare.
 
-from edmkit.search import energy, neighborhood, state, strategy
-from edmkit.search.dataset import Dataset, Subset
-
-data = Dataset(X=X_full, Y=Y_full)
-fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
-train = Subset(data, fold1.train)
-
-fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
-initial_context, plan = energy.holdout(
-    data=train, fold=fold2, predict=simplex_projection, metric=mean_rho,
-)
-
-with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-    def E(states, contexts):
-        futures = [pool.submit(job) for job in plan(states, contexts)]
-        n = states.shape[0]
-        energies = np.empty(n, dtype=np.float64)
-        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
-        for f in futures:
-            s, e, c = f.result()
-            energies[s] = e
-            new_contexts[s] = c
-        return energies, new_contexts
-
-    N = neighborhood.forward(data.X.shape[1])
-    S = strategy.greedy(E, N)
-    initial = strategy.Frontier(
-        states=state.initial(),
-        contexts=initial_context,
-        energies=np.array([float("inf")], dtype=np.float64),
-    )
-    trace = list(strategy.run(initial, S, max_steps=8, rng=np.random.default_rng(0)))
-
-selected = trace[-1].states[0]
-```
+By the end, the pieces compose into a script you can adapt to a real dataset — see [Validation](/edmkit-search/concepts/validation/) for the sweep template.

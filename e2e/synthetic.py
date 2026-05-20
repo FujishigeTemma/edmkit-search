@@ -1,30 +1,20 @@
 import os
-import sysconfig
-import warnings
-
-# usearch.compiled (transitively imported below) re-enables the GIL on the
-# free-threaded build unless PYTHON_GIL=0 is set at interpreter startup,
-# which neutralizes the thread pool below.
-if sysconfig.get_config_var("Py_GIL_DISABLED") and os.environ.get("PYTHON_GIL") != "0":
-    warnings.warn(
-        "Run with PYTHON_GIL=0 to keep the GIL disabled; otherwise the thread pool below will not scale.",
-        stacklevel=2,
-    )
-
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 from edmkit.embedding import scan, select
-from edmkit.metrics import mean_rho as _mean_rho
+from edmkit.metrics import mean_rho
+from edmkit.search import energy, neighborhood, state, strategy
+from edmkit.search.dataset import Dataset, Subset
 from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import temporal_fold
 
-from edmkit.search import energy, neighborhood, state, strategy
-from edmkit.search.dataset import Dataset, Subset
+E_range = list(range(1, 10 + 1))
+tau_range = list(range(1, 5 + 1))
 
 
-def mean_rho(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
-    return 1.0 - _mean_rho(predictions.reshape(observations.shape), observations)
+def corr(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
 
 
 def lorenz96(
@@ -58,6 +48,7 @@ def main() -> None:
     K_noise = 18
     T = 2000
     n_ahead = 1
+    threshold = 0.1
 
     signal = lorenz96(K=K_signal, T=T + n_ahead, rng=rng)
     noise = np.empty((T + n_ahead, K_noise), dtype=np.float64)
@@ -74,30 +65,31 @@ def main() -> None:
     print(f"Dataset: X{data.X.shape}, Y{data.Y.shape}")
     print(f"Informative columns (after shuffle): {sorted(informative_idx)}")
 
-    fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
+    fold1 = temporal_fold(data.X.shape[0], 0.8)
     train = Subset(data, fold1.train)
     validation = Subset(data, fold1.validation)
     print(f"fold1 - train: {train.X.shape[0]}, validation: {validation.X.shape[0]}")
 
-    E_range = list(range(1, 10 + 1))
-    tau_range = list(range(1, 5 + 1))
-    threshold = 0.1
-
-    # Drop variables whose own embedding cannot predict the target manifold
-    # even with the best (E, tau).
-    def scan_one(i: int) -> float:
-        return float(
-            select(
-                scan(train.X[:, i], train.Y, E=E_range, tau=tau_range, predict=simplex_projection, metric=_mean_rho),
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+        # Drop variables whose own embedding cannot predict the target manifold
+        # even with the best (E, tau).
+        def scan_one(i: int):
+            return scan(
+                train.X[:, i],
+                train.Y,
                 E=E_range,
                 tau=tau_range,
-            )[2]
-        )
+                predict=simplex_projection,
+                metric=mean_rho,
+            )
 
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        scores = np.fromiter(pool.map(scan_one, range(data.X.shape[1])), dtype=np.float64, count=data.X.shape[1])
-        mask = scores >= threshold
-        print(f"Retaining {int(mask.sum())} out of {data.X.shape[1]} variables after filtering with threshold={threshold}")
+        scanned = list(pool.map(scan_one, range(data.X.shape[1])))
+        scores = np.array(
+            [float(select(r, E=E_range, tau=tau_range)[2]) for r in scanned],
+            dtype=np.float64,
+        )
+        mask = scores > threshold
+        print(f"Retaining {mask.sum()} out of {data.X.shape[1]} variables after filtering with threshold={threshold}")
 
         kept = np.flatnonzero(mask).tolist()
         informative_idx = {new_idx for new_idx, old_idx in enumerate(kept) if old_idx in informative_idx}
@@ -106,14 +98,14 @@ def main() -> None:
         validation = Subset(data, fold1.validation)
         print(f"Informative columns after filter: {sorted(informative_idx)}")
 
-        fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+        fold2 = temporal_fold(train.X.shape[0], 0.75)
         print(f"fold2 - train: {fold2.train.shape[0]}, validation: {fold2.validation.shape[0]}")
 
         initial_context, plan = energy.holdout(
             data=train,
             fold=fold2,
             predict=simplex_projection,
-            metric=mean_rho,
+            metric=corr,
             batch_size=64,
         )
 
@@ -147,19 +139,19 @@ def main() -> None:
     for j in range(len(trace)):
         selected = trace[j].states[0]
         predictions[j] = simplex_projection(train.X[:, selected], train.Y, validation.X[:, selected]).reshape(validation.Y.shape)
-    validation_scores = mean_rho(predictions, np.broadcast_to(validation.Y, predictions.shape))
+    score = corr(predictions, np.broadcast_to(validation.Y, predictions.shape))
 
     selected = [int(i) for i in trace[-1].states[0]]
     print(f"\nSelected {len(selected)} variables (greedy):")
     for j, idx in enumerate(selected, 1):
         marker = "*" if idx in informative_idx else " "
         train_score = float(trace[j - 1].energies[0])
-        val_score = float(validation_scores[j - 1])
+        val_score = float(score[j - 1])
         print(f"  {marker} dim {j}: idx={idx:3d}, train={train_score:.4f}, validation={val_score:.4f}")
 
     recovered = sum(1 for idx in selected if idx in informative_idx)
     print(f"\nRecovered {recovered}/{K_signal} informative variables in the first {len(selected)} selections.")
-    print(f"Best held-out step: {int(np.argmin(validation_scores)) + 1} (score={float(validation_scores.min()):.4f})")
+    print(f"Best held-out step: {int(np.argmin(score)) + 1} (score={float(score.min()):.4f})")
 
 
 if __name__ == "__main__":

@@ -1,24 +1,38 @@
 ---
 title: Energy
-description: Scoring batches of states, the Plan/Energy split, and the three built-in energies.
+description: What an energy is, why it ships as a Plan, which built-in to use when, and how to write your own.
 ---
 
-An `Energy` is a function `(states, contexts) -> (energies, contexts')` that gives every state in a batch a scalar score. Lower is better.
-
-## Two Forms: Plan and Energy
-
-The three built-in scorers — [`holdout`](/edmkit-search/reference/energy/), [`loo`](/edmkit-search/reference/energy/), [`folds`](/edmkit-search/reference/energy/) — do **not** return an `Energy` directly. They return `(initial_context, plan)`:
+An `Energy` gives every candidate state in a batch a scalar score. Lower is better — wrap a goodness score as `corr = 1 - mean_rho` first.
 
 ```python
-type Plan = Callable[
-    [States, Contexts],
-    Iterable[Callable[[], tuple[slice, Energies, Contexts]]],
-]
+type Energy = Callable[[States, Contexts], tuple[Energies, Contexts]]
 ```
 
-A `Plan` is a factory that, given the current batch, yields a sequence of *jobs*. Each job is a zero-argument callable that returns `(slice, energies, contexts)` for the contiguous slice of the batch it owns.
+For each row of `states`, the energy returns one scalar in `energies` and one row of carry-forward state in `contexts`. The library minimizes `energies`; what `contexts` carries is up to the energy.
 
-The caller picks an execution strategy and folds the per-job results back into an `Energy`. The idiomatic form is an inline closure that captures `plan`, `initial_context`, and the chosen executor:
+Examples on this page use:
+
+```python
+from edmkit.metrics import mean_rho
+
+def corr(predictions, observations):
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+```
+
+## The Plan / Energy split
+
+Scoring is the most expensive operation in the search, and different environments parallelize differently (thread pool, process pool, serial). The built-in scorers therefore do **not** return an `Energy` directly. They return `(initial_context, plan)`:
+
+```python
+type Plan = Callable[[States, Contexts], Iterable[Callable[[], tuple[slice, Energies, Contexts]]]]
+```
+
+A `Plan` is a factory: given the current batch, it yields a sequence of independent zero-argument *jobs*. Each job returns `(slice, energies, contexts)` for the slice it owns. The library stays agnostic about *how* jobs execute.
+
+## The canonical closure
+
+The idiomatic `Energy` is a closure over `plan`, `initial_context`, and your executor:
 
 ```python
 initial_context, plan = energy.holdout(...)
@@ -38,11 +52,13 @@ with ThreadPoolExecutor() as pool:
     # ... strategy.run(...) inside the with-block
 ```
 
-The library never touches a thread. That decision is yours.
+For sequential execution, replace the futures loop with `for job in plan(states, contexts): sl, e, c = job(); ...`. For a process pool, hand the jobs to `ProcessPoolExecutor.map`.
 
-## Contexts
+Requires free-threaded Python for parallel speedup — see [Getting Started → Installation](/edmkit-search/getting-started/#installation).
 
-`Contexts` is a `(N, K)` array threaded between steps alongside `states` and `energies`. The width `K` is fixed by the energy at construction time and is opaque to the rest of the search loop. Built-in scorers use it as follows:
+### Contexts: what threads between steps
+
+`Contexts` is a `(N, K)` array threaded between steps. The width `K` is fixed at construction time and is opaque to the rest of the loop:
 
 | Energy | `K` | What contexts carry |
 | ------ | --- | ------------------- |
@@ -50,43 +66,61 @@ The library never touches a thread. That decision is yours.
 | `loo` | 0 | (nothing) |
 | `folds` | `len(folds)` | the previous step's per-fold metric vector |
 
-`folds` is the only built-in that uses contexts non-trivially. The energy it reports is the weighted sum of `(metric - previous_metric)` across folds, so the search is driven by the *delta* relative to the parent state — see below.
+`folds` reports a weighted sum of `(metric - previous_metric)` across folds — see below.
 
-## holdout: One Fold, Score Directly
+### `batch_size`: what to tune
+
+Each job materializes arrays of shape `(batch_size, T_inner, d)`. Cap `batch_size * T_inner * d` to fit in per-thread RAM. The default `10000` works for small inner folds; larger inner folds typically run with 2000–4000.
+
+## Which energy when
+
+| Energy | Best when | Cost vs `holdout` |
+| ------ | --------- | ----------------- |
+| **`holdout`** | The default. Inner-fold size is comfortable and one fold is representative. | 1× |
+| **`folds`** | Inner-fold score is noisy across split positions, or you want to balance across regimes. | ~`len(folds)` × |
+| **`loo`** | Training data is scarce; cannot afford a holdout fold. | depends on `T_inner` and `d` |
+
+Start with `holdout`. Switch to `folds` if training-vs-validation trajectories disagree about the best stopping step. Switch to `loo` only when `len(train)` is small enough that a `0.75/0.25` inner split throws away too much.
+
+## holdout — one fold, score directly
+
+For each state, fit `predict` on the fold's train arm with the state's columns and score against the validation arm via `metric`. The metric value *is* the state's energy.
 
 ```python
-fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+from edmkit.simplex_projection import simplex_projection
+from edmkit.splits import temporal_fold
+
+inner = temporal_fold(train.X.shape[0], 0.75)
 initial_context, plan = energy.holdout(
-    data=train,
-    fold=fold2,
-    predict=simplex_projection,
-    metric=mean_rho,           # lower is better
+    data=train, fold=inner,
+    predict=simplex_projection, metric=corr,
     batch_size=64,
 )
 ```
 
-For each state in the batch, the columns of `train.X` indexed by the state are used to fit `predict` on the fold's train arm and to score it against the validation arm via `metric`. The metric value *is* the state's energy. The simplest and fastest of the three.
+## loo — self-prediction with a Theiler window
 
-## loo: Self-Prediction with a Theiler Window
+Predict each row of the training arm from its in-library neighbours, excluding any within `theiler_window` time steps (blocking the trivial "next step is right next door" leak).
 
 ```python
-initial_context, plan = energy.loo(
-    data=train,
-    metric=mean_rho,
-    theiler_window=(E - 1) * tau,
-)
+initial_context, plan = energy.loo(data=train, metric=corr, theiler_window=0)
 ```
 
-For each state, run leave-one-out simplex projection on `train.X[:, state]` against `train.Y`. Each library point is predicted from its in-library neighbours, excluding temporally close points via the Theiler window (`(E - 1) * tau` is the conventional choice for lagged embeddings). Useful when you do not want to commit a holdout fold.
+:::note[`theiler_window` default is 0]
+The conventional EDM recipe `(E - 1) * tau` applies only when columns are lag-embedded. This library's search does not lag-embed, so `theiler_window=0` is appropriate unless your `X` columns are themselves pre-embedded.
+:::
 
-## folds: Multi-Fold with Attention
+## folds — multi-fold with per-fold attention
 
 ```python
-folds = sliding_folds(
-    train.X.shape[0],
-    train_size=int(train.X.shape[0] * 0.4),
-    validation_size=int(train.X.shape[0] * 0.2),
-    stride=int(train.X.shape[0] * 0.2),
+from edmkit.splits import sliding_folds
+
+T = train.X.shape[0]
+inner_folds = sliding_folds(
+    T,
+    train_size=int(T * 0.4),
+    validation_size=int(T * 0.2),
+    stride=int(T * 0.2),
 )
 # [======t(0.4)======][=v(0.2)=]--------------------
 # ----------[======t(0.4)======][=v(0.2)=]----------
@@ -94,9 +128,9 @@ folds = sliding_folds(
 
 initial_context, plan = energy.folds(
     data=train,
-    folds=folds,
+    folds=inner_folds,
     predict=simplex_projection,
-    metric=mean_rho,
+    metric=corr,
     weight=energy.weight.softmax(temperature=1.0),
 )
 ```
@@ -104,20 +138,21 @@ initial_context, plan = energy.folds(
 Each state is scored on every fold, producing a per-fold metric vector. The energy reported is:
 
 ```
-weight(previous_metrics) · (current_metrics − previous_metrics)
+energy = weight(previous_metrics) · (current_metrics − previous_metrics)
 ```
 
-The `weight` function (e.g. [`softmax`](/edmkit-search/reference/energy/)) turns the *previous* per-fold metrics into a row-stochastic weighting — a per-fold attention mechanism over the search trajectory. The current per-fold metrics are then carried forward as the new context.
+The `weight` function turns *previous* per-fold metrics into a row-stochastic weighting — a per-fold attention mechanism over the search trajectory. Current per-fold metrics are carried forward as the new context.
 
-Use this when you want the search to focus on folds where the parent state is already doing well (low temperature on a "lower is better" metric → concentrate on the folds with the smallest gap), or to penalize regression on previously-strong folds.
+### softmax temperature as a knob
 
-## Writing Your Own Energy
+`energy.weight.softmax(temperature)` is a continuous slider:
 
-A custom energy needs to do two things:
+- **Low temperature (`T → 0`)** concentrates weight on the folds with the largest previous metric (the parent's *worst* folds — "lower is better"). The search prioritises improving where the parent struggled most.
+- **High temperature (`T → ∞`)** flattens toward uniform. The energy approaches the unweighted *mean* improvement across folds.
 
-1. Return an `initial` context of shape `(1, K)` for the chosen `K`.
-2. Provide a `plan(states, contexts)` that yields independent jobs.
+A sweep over `T ∈ {0.1, 1, 10}` is a natural ablation; see [`edmkit-search-experiments`](https://github.com/FujishigeTemma/edmkit-search-experiments).
 
-Each job is a closure that captures its slice — by default-binding `start` and `end` you avoid the Python loop-variable closure trap. The slice it owns is `slice(start, end)`, and it must return energies and contexts of that size.
+## Writing your own energy
 
-The three built-ins all follow this template; copying the structure of [`energy/holdout.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/src/edmkit/search/energy/holdout.py) is the fastest way to a custom scorer.
+Return an `initial` context of shape `(1, K)` and a `plan(states, contexts)` yielding independent jobs (default-bind `start`/`end` in each job to avoid the closure trap). Copying [`energy/holdout.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/src/edmkit/search/energy/holdout.py) is the fastest path.
+

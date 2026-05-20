@@ -28,6 +28,7 @@ export default defineConfig({
             { label: "Energy", slug: "concepts/energy" },
             { label: "Neighborhood", slug: "concepts/neighborhood" },
             { label: "Strategy", slug: "concepts/strategy" },
+            { label: "Validation", slug: "concepts/validation" },
           ],
         },
         {

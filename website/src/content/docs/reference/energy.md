@@ -77,7 +77,7 @@ folds(*, data: dataset.Dataset, folds: Sequence[Fold], predict: PredictFunc, met
 
 Build a multi-fold `Plan` that scores each state as a weighted improvement over the previous step.
 
-Each state is scored on every fold to obtain a per-fold metric
+Each state is scored on every fold to produce a per-fold metric
 vector. The energy reported for the state is the ``weight``-ed sum
 of ``(metric - previous_metric)`` across folds, so the search is
 driven by the *delta* relative to the parent state. The per-fold
@@ -85,8 +85,11 @@ metric vector is then carried forward as the new context.
 
 The weighting function (e.g. `softmax`) is applied to the
 incoming contexts and decides how strongly each fold contributes
-to the energy — making this a per-fold attention mechanism over
-the search trajectory.
+to the energy — a per-fold attention mechanism over the search
+trajectory. A low-temperature softmax focuses energy on the folds
+where the parent state is already strongest, penalizing regression
+there; a high-temperature softmax tends toward an unweighted mean
+across folds.
 
 **Parameters:**
 
@@ -111,6 +114,36 @@ Name | Type | Description
 Type | Description
 ---- | -----------
 <code>[ValueError](#ValueError)</code> | If ``folds`` is empty.
+
+**Examples:**
+
+```python
+from edmkit.metrics import mean_rho
+from edmkit.simplex_projection import simplex_projection
+from edmkit.splits import sliding_folds
+
+from edmkit.search import energy
+
+
+def corr(predictions, observations):  # strategies minimize energy
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+inner_folds = sliding_folds(
+    train.X.shape[0],
+    train_size=int(train.X.shape[0] * 0.4),
+    validation_size=int(train.X.shape[0] * 0.2),
+    stride=int(train.X.shape[0] * 0.2),
+)
+
+initial_context, plan = energy.folds(
+    data=train,
+    folds=inner_folds,
+    predict=simplex_projection,
+    metric=corr,
+    weight=energy.weight.softmax(temperature=1.0),
+)
+```
 
 
 
@@ -151,17 +184,23 @@ Name | Type | Description
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+from edmkit.metrics import mean_rho
 from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import temporal_fold
 
 from edmkit.search import energy, state
 
-fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+
+def corr(predictions, observations):  # strategies minimize energy
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+fold2 = temporal_fold(train.X.shape[0], 0.75)
 initial_context, plan = energy.holdout(
     data=train,
     fold=fold2,
     predict=simplex_projection,
-    metric=mean_rho,  # 1 - rho, lower is better
+    metric=corr,
     batch_size=64,
 )
 
@@ -193,7 +232,8 @@ For each state in the batch, the corresponding column-subset of
 ``data.X`` is used as the library for simplex-projection LOO; each
 library point is predicted from its in-library neighbours
 (excluding temporally close points via the Theiler window), and
-the predictions are scored against ``data.Y`` with ``metric``.
+the predictions are scored against ``data.Y`` with ``metric``. No
+holdout fold is consumed — useful when training data is scarce.
 
 **Parameters:**
 
@@ -216,6 +256,25 @@ Name | Type | Description
 Type | Description
 ---- | -----------
 <code>[ValueError](#ValueError)</code> | If ``theiler_window`` is negative.
+
+**Examples:**
+
+```python
+from edmkit.metrics import mean_rho
+
+from edmkit.search import energy
+
+
+def corr(predictions, observations):  # strategies minimize energy
+    return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
+
+
+initial_context, plan = energy.loo(
+    data=train,
+    metric=corr,
+    theiler_window=0,
+)
+```
 
 
 

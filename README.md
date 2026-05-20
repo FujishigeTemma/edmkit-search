@@ -39,8 +39,3 @@ and uses greedy forward selection to recover the informative subset.
 ```bash
 uv run pytest
 ```
-
-## Experiments
-
-Real-data experiments (fly, fish) and the analysis pipeline live in a
-separate repository: [`edmkit-search-experiments`](../edmkit-search-experiments).
