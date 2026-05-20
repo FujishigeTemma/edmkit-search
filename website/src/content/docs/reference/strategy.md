@@ -136,7 +136,7 @@ iterations, whichever comes first.
 
 Name | Type | Description | Default
 ---- | ---- | ----------- | -------
-`initial` | <code>[Frontier](#edmkit.search.strategy.frontier.Frontier)</code> | Starting frontier. For the standard forward-selection setup this is the empty state ``state.initial()`` paired with the energy's ``initial_ctx``. | *required*
+`initial` | <code>[Frontier](#edmkit.search.strategy.frontier.Frontier)</code> | Starting frontier. For the standard forward-selection setup this is the empty state ``state.initial()`` paired with the energy's ``initial_context``. | *required*
 `step` | <code>[Step](#edmkit.search.strategy.frontier.Step)</code> | Per-iteration transition (e.g. from `beam` or `greedy`). | *required*
 `max_steps` | <code>[int](#int)</code> | Upper bound on the number of iterations. Must be non-negative. | *required*
 `rng` | <code>[Generator](#numpy.random.Generator)</code> | Generator threaded into ``step`` (which in turn passes it to the neighborhood) so the whole search is reproducible from a single seed. | *required*
@@ -160,19 +160,29 @@ import numpy as np
 
 from edmkit.search import energy, neighborhood, state, strategy
 
-initial_ctx, plan = energy.holdout(...)
-E = parallel(initial_ctx, plan, pool)  # see e2e/synthetic.py
-N = neighborhood.forward(data.X.shape[1])
+initial_context, plan = energy.holdout(...)
 
-initial = strategy.Frontier(
-    states=state.initial(),
-    contexts=initial_ctx,
-    energies=np.array([float("inf")], dtype=np.float64),
-)
-step = strategy.greedy(E, N)
+with ThreadPoolExecutor() as pool:
+    def E(states, contexts):
+        futures = [pool.submit(job) for job in plan(states, contexts)]
+        n = states.shape[0]
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
+        for f in futures:
+            s, e, c = f.result()
+            energies[s] = e
+            new_contexts[s] = c
+        return energies, new_contexts
 
-rng = np.random.default_rng(0)
-trace = list(strategy.run(initial, step, max_steps=8, rng=rng))
-selected = trace[-1].states[0]  # final selected indices
+    N = neighborhood.forward(data.X.shape[1])
+    S = strategy.greedy(E, N)
+    initial = strategy.Frontier(
+        states=state.initial(),
+        contexts=initial_context,
+        energies=np.array([float("inf")], dtype=np.float64),
+    )
+
+    trace = list(strategy.run(initial, S, max_steps=8, rng=np.random.default_rng(0)))
+selected = trace[-1].states[0]
 ```
 

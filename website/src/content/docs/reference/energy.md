@@ -150,22 +150,33 @@ Name | Type | Description
 ```python
 from concurrent.futures import ThreadPoolExecutor
 
+import numpy as np
 from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import temporal_fold
 
-from edmkit.search import energy
+from edmkit.search import energy, state
 
-fold = temporal_fold(len(train), train_ratio=0.75)
-initial_ctx, plan = energy.holdout(
+fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+initial_context, plan = energy.holdout(
     data=train,
-    fold=fold,
+    fold=fold2,
     predict=simplex_projection,
     metric=mean_rho,  # 1 - rho, lower is better
     batch_size=64,
 )
 
 with ThreadPoolExecutor() as pool:
-    E = parallel(initial_ctx, plan, pool)  # see e2e/synthetic.py
+    def E(states: state.States, contexts: energy.Contexts) -> tuple[energy.Energies, energy.Contexts]:
+        futures = [pool.submit(job) for job in plan(states, contexts)]
+        n = states.shape[0]
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
+        for f in futures:
+            s, e, c = f.result()
+            energies[s] = e
+            new_contexts[s] = c
+        return energies, new_contexts
+    # ... strategy.run(...) inside the with-block
 ```
 
 

@@ -55,22 +55,27 @@ type Energy = Callable[[States, Contexts], tuple[Energies, Contexts]]
 
 The three built-in scorers — [`holdout`](/edmkit-search/reference/energy/), [`loo`](/edmkit-search/reference/energy/), [`folds`](/edmkit-search/reference/energy/) — all return `(initial_context, plan)`. The caller decides how to execute the plan's jobs (sequentially, on a thread pool, on a process pool) and wraps the result back into an `Energy`. The search loop itself never touches a thread.
 
-This is what the trivial sequential wrapper looks like:
+The idiomatic wrapper is a closure over `plan` and `pool`, defined alongside the search call:
 
 ```python
-def sequential(plan: Plan, n_context: int) -> Energy:
+initial_context, plan = energy.holdout(...)
+
+with ThreadPoolExecutor() as pool:
     def E(states, contexts):
-        energies = np.empty(states.shape[0], dtype=np.float64)
-        new_ctx = np.empty((states.shape[0], n_context), dtype=np.float64)
-        for job in plan(states, contexts):
-            s, e, c = job()
+        futures = [pool.submit(job) for job in plan(states, contexts)]
+        n = states.shape[0]
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
+        for f in futures:
+            s, e, c = f.result()
             energies[s] = e
-            new_ctx[s] = c
-        return energies, new_ctx
-    return E
+            new_contexts[s] = c
+        return energies, new_contexts
+
+    # ... build N, S, initial, then strategy.run(initial, S, ...)
 ```
 
-The `parallel` wrapper in [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py) is the same idea with `pool.submit`.
+For a sequential run, replace the `pool.submit` line with a direct `for job in plan(...): s, e, c = job()` loop. See [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py) for the full pipeline.
 
 ## Energies Are Minimized
 

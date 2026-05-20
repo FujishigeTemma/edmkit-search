@@ -17,31 +17,14 @@ import numpy as np
 from edmkit.embedding import scan, select
 from edmkit.metrics import mean_rho as _mean_rho
 from edmkit.simplex_projection import simplex_projection
-from edmkit.splits import Fold, temporal_fold
+from edmkit.splits import temporal_fold
 
 from edmkit.search import energy, neighborhood, state, strategy
 from edmkit.search.dataset import Dataset, Subset
-from edmkit.search.energy import Contexts, Energies, Energy, Plan
-from edmkit.search.state import States
 
 
-def mean_rho(predicted: np.ndarray, observed: np.ndarray) -> np.ndarray:
-    return 1.0 - _mean_rho(predicted.reshape(observed.shape), observed)
-
-
-def parallel(initial: Contexts, plan: Plan, pool: ThreadPoolExecutor) -> Energy:
-    def E(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
-        futures = [pool.submit(job) for job in plan(states, contexts)]
-        n = states.shape[0]
-        energies = np.empty(n, dtype=np.float64)
-        new_contexts = np.empty((n, initial.shape[1]), dtype=np.float64)
-        for f in futures:
-            s, e, c = f.result()
-            energies[s] = e
-            new_contexts[s] = c
-        return energies, new_contexts
-
-    return E
+def mean_rho(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    return 1.0 - _mean_rho(predictions.reshape(observations.shape), observations)
 
 
 def lorenz96(
@@ -74,109 +57,109 @@ def main() -> None:
     K_signal = 6
     K_noise = 18
     T = 2000
-    horizon = 1
+    n_ahead = 1
 
-    signal = lorenz96(K=K_signal, T=T + horizon, rng=rng)
-    noise = np.empty((T + horizon, K_noise), dtype=np.float64)
+    signal = lorenz96(K=K_signal, T=T + n_ahead, rng=rng)
+    noise = np.empty((T + n_ahead, K_noise), dtype=np.float64)
     noise[0] = rng.standard_normal(K_noise)
     phi = rng.uniform(0.2, 0.8, size=K_noise)
-    for t in range(1, T + horizon):
+    for t in range(1, T + n_ahead):
         noise[t] = phi * noise[t - 1] + rng.standard_normal(K_noise)
 
     full = np.concatenate([signal, noise], axis=1)
     order = rng.permutation(full.shape[1])
-    X_full = full[:T, order]
-    informative_idx = {int(np.where(order == k)[0][0]) for k in range(K_signal)}
-
     # Predict the next-step value of L96 site 0 (original signal column 0).
-    Y_full = signal[horizon : T + horizon, 0:1]
-
-    data = Dataset(X=X_full, Y=Y_full)
+    data = Dataset(X=full[:T, order], Y=signal[n_ahead : T + n_ahead, 0:1])
+    informative_idx = {int(np.where(order == k)[0][0]) for k in range(K_signal)}
     print(f"Dataset: X{data.X.shape}, Y{data.Y.shape}")
     print(f"Informative columns (after shuffle): {sorted(informative_idx)}")
 
-    outer = temporal_fold(len(data), train_ratio=0.8)
-    train = Subset(data, outer.train)
-    validation = Subset(data, outer.validation)
-    print(f"Outer fold - train: {len(train)}, validation: {len(validation)}")
+    fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
+    train = Subset(data, fold1.train)
+    validation = Subset(data, fold1.validation)
+    print(f"fold1 - train: {train.X.shape[0]}, validation: {validation.X.shape[0]}")
 
     E_range = list(range(1, 10 + 1))
     tau_range = list(range(1, 5 + 1))
     threshold = 0.1
 
-    # filter variables if embedding of the variable doesn't predict the target manifold enough with optimal embedding parameters (E and tau)
-    def best_score(i: int) -> float:
+    # Drop variables whose own embedding cannot predict the target manifold
+    # even with the best (E, tau).
+    def scan_one(i: int) -> float:
         return float(
             select(
-                scan(
-                    train.X[:, i],
-                    train.Y,
-                    E=E_range,
-                    tau=tau_range,
-                    predict=simplex_projection,
-                    metric=_mean_rho,
-                ),
+                scan(train.X[:, i], train.Y, E=E_range, tau=tau_range, predict=simplex_projection, metric=_mean_rho),
                 E=E_range,
                 tau=tau_range,
             )[2]
         )
 
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        best_scores = np.fromiter(
-            pool.map(best_score, range(data.X.shape[1])),
-            dtype=np.float64,
-            count=data.X.shape[1],
-        )
-
-        mask = best_scores >= threshold
+        scores = np.fromiter(pool.map(scan_one, range(data.X.shape[1])), dtype=np.float64, count=data.X.shape[1])
+        mask = scores >= threshold
         print(f"Retaining {int(mask.sum())} out of {data.X.shape[1]} variables after filtering with threshold={threshold}")
 
         kept = np.flatnonzero(mask).tolist()
         informative_idx = {new_idx for new_idx, old_idx in enumerate(kept) if old_idx in informative_idx}
         data = Dataset(X=data.X[:, mask], Y=data.Y)
-        train = Subset(data, outer.train)
-        validation = Subset(data, outer.validation)
+        train = Subset(data, fold1.train)
+        validation = Subset(data, fold1.validation)
         print(f"Informative columns after filter: {sorted(informative_idx)}")
 
-        inner = temporal_fold(len(train), train_ratio=0.75)
-        print(f"Inner fold - train: {len(inner.train)}, validation: {len(inner.validation)}")
+        fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+        print(f"fold2 - train: {fold2.train.shape[0]}, validation: {fold2.validation.shape[0]}")
 
-        initial_ctx, plan = energy.holdout(
+        initial_context, plan = energy.holdout(
             data=train,
-            fold=Fold(train=inner.train, validation=inner.validation),
+            fold=fold2,
             predict=simplex_projection,
             metric=mean_rho,
             batch_size=64,
         )
-        E = parallel(initial_ctx, plan, pool)
+
+        def E(states: state.States, contexts: energy.Contexts) -> tuple[energy.Energies, energy.Contexts]:
+            futures = [pool.submit(job) for job in plan(states, contexts)]
+            n = states.shape[0]
+            energies = np.empty(n, dtype=np.float64)
+            new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
+            for f in futures:
+                s, e, c = f.result()
+                energies[s] = e
+                new_contexts[s] = c
+            return energies, new_contexts
+
         N = neighborhood.forward(data.X.shape[1])
-        step = strategy.greedy(E, N)
+        S = strategy.greedy(E, N)
         initial = strategy.Frontier(
             states=state.initial(),
-            contexts=initial_ctx,
+            contexts=initial_context,
             energies=np.array([float("inf")], dtype=np.float64),
         )
 
         max_steps = K_signal + 2
-        trace = list(strategy.run(initial, step, max_steps=max_steps, rng=rng))
+        trace = list(strategy.run(initial, S, max_steps=max_steps, rng=rng))
 
     if not trace:
         print("No variables selected.")
         return
 
+    predictions = np.zeros((len(trace), *validation.Y.shape))
+    for j in range(len(trace)):
+        selected = trace[j].states[0]
+        predictions[j] = simplex_projection(train.X[:, selected], train.Y, validation.X[:, selected]).reshape(validation.Y.shape)
+    validation_scores = mean_rho(predictions, np.broadcast_to(validation.Y, predictions.shape))
+
     selected = [int(i) for i in trace[-1].states[0]]
-    scores = [float(frontier.energies[0]) for frontier in trace]
     print(f"\nSelected {len(selected)} variables (greedy):")
-    for i, (idx, score) in enumerate(zip(selected, scores), 1):
+    for j, idx in enumerate(selected, 1):
         marker = "*" if idx in informative_idx else " "
-        print(f"  {marker} dim {i}: idx={idx:3d}, score={score:.4f}")
+        train_score = float(trace[j - 1].energies[0])
+        val_score = float(validation_scores[j - 1])
+        print(f"  {marker} dim {j}: idx={idx:3d}, train={train_score:.4f}, validation={val_score:.4f}")
 
     recovered = sum(1 for idx in selected if idx in informative_idx)
     print(f"\nRecovered {recovered}/{K_signal} informative variables in the first {len(selected)} selections.")
-
-    predictions = simplex_projection(train.X[:, selected], train.Y, validation.X[:, selected])
-    score = float(mean_rho(predictions, validation.Y))
-    print(f"Held-out validation score (1 - mean_rho): {score:.4f}")
+    print(f"Best held-out step: {int(np.argmin(validation_scores)) + 1} (score={float(validation_scores.min()):.4f})")
 
 
 if __name__ == "__main__":

@@ -45,9 +45,10 @@ Four orthogonal abstractions, plus a `Dataset` that holds the underlying time se
 
 ## Your First Search
 
-The example below recovers the informative columns of a Lorenz-96 trajectory that has been mixed with autoregressive noise. It is the smaller cousin of [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py) — read that script for the full pipeline including outer/inner folds and variable filtering.
+The example below recovers the informative columns of a Lorenz-96 trajectory mixed with autoregressive noise. It is the smaller cousin of [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py).
 
 ```python
+import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -57,62 +58,66 @@ from edmkit.splits import temporal_fold
 
 from edmkit.search import energy, neighborhood, state, strategy
 from edmkit.search.dataset import Dataset, Subset
-from edmkit.search.energy import Contexts, Energies, Energy, Plan
-from edmkit.search.state import States
 
 
-# 1. Frame metric so that lower is better (this is the "energy" convention).
-def mean_rho(predicted: np.ndarray, observed: np.ndarray) -> np.ndarray:
-    return 1.0 - _mean_rho(predicted.reshape(observed.shape), observed)
+# 1. Frame the metric so that lower is better — strategies minimize energy.
+def mean_rho(predictions: np.ndarray, observations: np.ndarray) -> np.ndarray:
+    return 1.0 - _mean_rho(predictions.reshape(observations.shape), observations)
 
 
-# 2. Wrap a Plan into an Energy by executing jobs on a thread pool.
-def parallel(initial: Contexts, plan: Plan, pool: ThreadPoolExecutor) -> Energy:
-    def E(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
+# 2. Wrap the data, carve a temporal split for the outer evaluation.
+data = Dataset(X=X_full, Y=Y_full)
+fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
+train = Subset(data, fold1.train)
+validation = Subset(data, fold1.validation)
+
+# 3. Build the energy from an inner split of the training arm.
+fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+initial_context, plan = energy.holdout(
+    data=train,
+    fold=fold2,
+    predict=simplex_projection,
+    metric=mean_rho,
+    batch_size=64,
+)
+
+# 4. Run the search. The energy wrapper is a closure over `plan` and `pool`,
+#    so the library never touches a thread.
+with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+    def E(states: state.States, contexts: energy.Contexts) -> tuple[energy.Energies, energy.Contexts]:
         futures = [pool.submit(job) for job in plan(states, contexts)]
         n = states.shape[0]
         energies = np.empty(n, dtype=np.float64)
-        new_contexts = np.empty((n, initial.shape[1]), dtype=np.float64)
+        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
         for f in futures:
             s, e, c = f.result()
             energies[s] = e
             new_contexts[s] = c
         return energies, new_contexts
 
-    return E
-
-
-# 3. Build the four pieces.
-data = Dataset(X=X_full, Y=Y_full)
-outer = temporal_fold(len(data), train_ratio=0.8)
-train, validation = Subset(data, outer.train), Subset(data, outer.validation)
-inner = temporal_fold(len(train), train_ratio=0.75)
-
-initial_ctx, plan = energy.holdout(
-    data=train,
-    fold=inner,
-    predict=simplex_projection,
-    metric=mean_rho,
-)
-
-with ThreadPoolExecutor() as pool:
-    E = parallel(initial_ctx, plan, pool)
     N = neighborhood.forward(data.X.shape[1])
-    step = strategy.greedy(E, N)
+    S = strategy.greedy(E, N)
     initial = strategy.Frontier(
         states=state.initial(),
-        contexts=initial_ctx,
+        contexts=initial_context,
         energies=np.array([float("inf")], dtype=np.float64),
     )
 
-    trace = list(strategy.run(initial, step, max_steps=8, rng=np.random.default_rng(0)))
+    trace = list(strategy.run(initial, S, max_steps=8, rng=np.random.default_rng(0)))
 
-selected = trace[-1].states[0]            # final selected indices
-trajectory = [f.energies[0] for f in trace]  # per-step best energy
+# 5. Score the trajectory on the held-out arm.
+predictions = np.zeros((len(trace), *validation.Y.shape))
+for j in range(len(trace)):
+    selected = trace[j].states[0]
+    predictions[j] = simplex_projection(train.X[:, selected], train.Y, validation.X[:, selected]).reshape(validation.Y.shape)
+validation_scores = mean_rho(predictions, np.broadcast_to(validation.Y, predictions.shape))
+
+selected = trace[-1].states[0]  # final selected indices
+best_step = int(np.argmin(validation_scores))
 ```
 
 ## What's Next?
 
 - Read [The Search Loop](/edmkit-search/concepts/search-loop/) for the conceptual picture.
 - Browse the full [API Reference](/edmkit-search/reference/dataset/).
-- See [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py) for the full pipeline (outer/inner folds, parallel filtering, validation scoring).
+- See [`e2e/synthetic.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/e2e/synthetic.py) for the full pipeline (data generation, variable filtering, two-level fold split, per-step validation curve).

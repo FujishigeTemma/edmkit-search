@@ -18,21 +18,24 @@ type Plan = Callable[
 
 A `Plan` is a factory that, given the current batch, yields a sequence of *jobs*. Each job is a zero-argument callable that returns `(slice, energies, contexts)` for the contiguous slice of the batch it owns.
 
-The caller picks an execution strategy and folds the per-job results back into an `Energy`:
+The caller picks an execution strategy and folds the per-job results back into an `Energy`. The idiomatic form is an inline closure that captures `plan`, `initial_context`, and the chosen executor:
 
 ```python
-def parallel(initial_ctx, plan, pool):
+initial_context, plan = energy.holdout(...)
+
+with ThreadPoolExecutor() as pool:
     def E(states, contexts):
         futures = [pool.submit(job) for job in plan(states, contexts)]
         n = states.shape[0]
-        energies = np.empty(n)
-        new_ctx  = np.empty((n, initial_ctx.shape[1]))
+        energies = np.empty(n, dtype=np.float64)
+        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
         for f in futures:
             s, e, c = f.result()
             energies[s] = e
-            new_ctx[s]  = c
-        return energies, new_ctx
-    return E
+            new_contexts[s] = c
+        return energies, new_contexts
+
+    # ... strategy.run(...) inside the with-block
 ```
 
 The library never touches a thread. That decision is yours.
@@ -52,9 +55,10 @@ The library never touches a thread. That decision is yours.
 ## holdout: One Fold, Score Directly
 
 ```python
-initial_ctx, plan = energy.holdout(
+fold2 = temporal_fold(train.X.shape[0], train_ratio=0.75)
+initial_context, plan = energy.holdout(
     data=train,
-    fold=fold,
+    fold=fold2,
     predict=simplex_projection,
     metric=mean_rho,           # lower is better
     batch_size=64,
@@ -66,7 +70,7 @@ For each state in the batch, the columns of `train.X` indexed by the state are u
 ## loo: Self-Prediction with a Theiler Window
 
 ```python
-initial_ctx, plan = energy.loo(
+initial_context, plan = energy.loo(
     data=train,
     metric=mean_rho,
     theiler_window=(E - 1) * tau,
@@ -78,12 +82,22 @@ For each state, run leave-one-out simplex projection on `train.X[:, state]` agai
 ## folds: Multi-Fold with Attention
 
 ```python
-initial_ctx, plan = energy.folds(
+folds = sliding_folds(
+    train.X.shape[0],
+    train_size=int(train.X.shape[0] * 0.4),
+    validation_size=int(train.X.shape[0] * 0.2),
+    stride=int(train.X.shape[0] * 0.2),
+)
+# [======t(0.4)======][=v(0.2)=]--------------------
+# ----------[======t(0.4)======][=v(0.2)=]----------
+# --------------------[======t(0.4)======][=v(0.2)=]
+
+initial_context, plan = energy.folds(
     data=train,
-    folds=cv_folds,                 # Sequence[Fold]
+    folds=folds,
     predict=simplex_projection,
     metric=mean_rho,
-    weight=softmax(temperature=1.0),
+    weight=energy.weight.softmax(temperature=1.0),
 )
 ```
 

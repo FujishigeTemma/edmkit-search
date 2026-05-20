@@ -25,9 +25,9 @@ A `Subset` is a non-copying view into a `Dataset` restricted to a 1D integer ind
 from edmkit.search.dataset import Subset
 from edmkit.splits import temporal_fold
 
-outer = temporal_fold(len(data), train_ratio=0.8)
-train      = Subset(data, outer.train)
-validation = Subset(data, outer.validation)
+fold1 = temporal_fold(data.X.shape[0], train_ratio=0.8)
+train      = Subset(data, fold1.train)
+validation = Subset(data, fold1.validation)
 ```
 
 `Subset.X` and `Subset.Y` are materialized lazily via `@cached_property`, so a subset that is never accessed costs only the index array.

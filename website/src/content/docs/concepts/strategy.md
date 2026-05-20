@@ -86,13 +86,13 @@ The whole library's runtime cost lives inside `E(children, ...)`. Everything aro
 
 ## Initial Frontier
 
-The conventional starting point for forward selection is the empty state, the energy's `initial_ctx`, and an infinite energy that any real score will beat:
+The conventional starting point for forward selection is the empty state, the energy's `initial_context`, and an infinite energy that any real score will beat:
 
 ```python
-initial_ctx, plan = energy.holdout(...)
+initial_context, plan = energy.holdout(...)
 initial = strategy.Frontier(
     states=state.initial(),                                  # (1, 0)
-    contexts=initial_ctx,                                    # (1, K)
+    contexts=initial_context,                                # (1, K)
     energies=np.array([float("inf")], dtype=np.float64),     # (1,)
 )
 ```
