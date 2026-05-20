@@ -17,6 +17,42 @@ def loo(
     theiler_window: int = 0,
     batch_size: int = 10000,
 ) -> tuple[Contexts, Plan]:
+    """Build a leave-one-out `Plan` that scores each state by self-prediction.
+
+    For each state in the batch, the corresponding column-subset of
+    ``data.X`` is used as the library for simplex-projection LOO; each
+    library point is predicted from its in-library neighbours
+    (excluding temporally close points via the Theiler window), and
+    the predictions are scored against ``data.Y`` with ``metric``.
+
+    Parameters
+    ----------
+    data : dataset.Dataset
+        Dataset whose columns are selected by each state.
+    metric : MetricFunc
+        Reducer turning ``(predictions, observations)`` into a scalar
+        per state. Lower must mean better.
+    theiler_window : int, default 0
+        Theiler window half-width passed to `simplex_projection.loo`.
+        Library points ``j`` with ``|i - j| <= theiler_window`` are
+        excluded when predicting point ``i``. For lagged-embedded
+        inputs, ``(E - 1) * tau`` is the conventional choice.
+    batch_size : int, default 10000
+        Number of states processed in a single job.
+
+    Returns
+    -------
+    initial : Contexts
+        Initial context of shape ``(1, 0)`` — LOO carries no per-state
+        state across steps.
+    plan : Plan
+        Plan that yields one job per ``batch_size`` chunk of states.
+
+    Raises
+    ------
+    ValueError
+        If ``theiler_window`` is negative.
+    """
     if theiler_window < 0:
         raise ValueError("theiler_window must be non-negative")
 

@@ -19,6 +19,62 @@ def holdout(
     metric: MetricFunc,
     batch_size: int = 10000,
 ) -> tuple[Contexts, Plan]:
+    """Build a holdout-validation `Plan` that scores each state on a single fold.
+
+    For each state in the batch, the columns of ``data.X`` indexed by
+    the state are used to fit ``predict`` on the fold's train arm and
+    score it against the fold's validation arm via ``metric``. The
+    metric value becomes the state's energy directly; no carry-over
+    context is needed.
+
+    Parameters
+    ----------
+    data : dataset.Dataset
+        Dataset whose columns (``X[:, state]``) are selected by each state.
+    fold : Fold
+        Train/validation split used to score every state.
+    predict : PredictFunc
+        Prediction function with signature ``(X, Y, Q) -> predictions``
+        (e.g. ``simplex_projection`` or ``partial(smap, theta=...)``).
+    metric : MetricFunc
+        Reducer turning ``(predictions, observations)`` into a scalar
+        per state. Lower must mean better — see the project README on
+        framing scores as energies.
+    batch_size : int, default 10000
+        Number of states processed in a single job. Smaller values
+        reduce peak memory; larger values reduce dispatch overhead.
+
+    Returns
+    -------
+    initial : Contexts
+        Initial context of shape ``(1, 0)`` — holdout carries no
+        per-state state across steps.
+    plan : Plan
+        Plan that yields one job per ``batch_size`` chunk of states.
+
+    Examples
+    --------
+    ```python
+    from concurrent.futures import ThreadPoolExecutor
+
+    from edmkit.simplex_projection import simplex_projection
+    from edmkit.splits import temporal_fold
+
+    from edmkit.search import energy
+
+    fold = temporal_fold(len(train), train_ratio=0.75)
+    initial_ctx, plan = energy.holdout(
+        data=train,
+        fold=fold,
+        predict=simplex_projection,
+        metric=mean_rho,  # 1 - rho, lower is better
+        batch_size=64,
+    )
+
+    with ThreadPoolExecutor() as pool:
+        E = parallel(initial_ctx, plan, pool)  # see e2e/synthetic.py
+    ```
+    """
     train = dataset.Subset(data, fold.train)
     validation = dataset.Subset(data, fold.validation)
     initial = np.empty((1, 0), dtype=np.float64)

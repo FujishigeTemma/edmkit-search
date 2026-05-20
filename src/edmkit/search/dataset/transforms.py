@@ -1,13 +1,10 @@
 from collections.abc import Callable
 from functools import reduce
-from typing import TypeAlias
 
 import numpy as np
 
-Transform: TypeAlias = Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
-"""Type alias for a function that takes `(x, y)` and returns `(x', y')`.
-Typically a closure returned by a higher-order preprocessing or data-augmentation function.
-"""
+type Transform = Callable[[np.ndarray, np.ndarray], tuple[np.ndarray, np.ndarray]]
+"""A function ``(x, y) -> (x', y')`` applied lazily at sample-access time. Typically a closure returned by a preprocessing or data-augmentation factory."""
 
 
 def zscore_normalize(
@@ -15,28 +12,41 @@ def zscore_normalize(
     *,
     target: str,
 ) -> Transform:
-    """Return a `Transform` that applies z-score normalization using statistics computed from `data`.
+    """Build a `Transform` that z-score normalizes using statistics from ``data``.
+
+    The mean and standard deviation are computed once over the leading
+    axes of ``data`` (treating the last axis as the feature axis) and
+    captured in the returned closure. The closure can then be applied
+    repeatedly to individual samples without recomputing statistics.
 
     Parameters
     ----------
-    `data` : `np.ndarray` of shape `(T, D)` or `(N, T, D)`
-        Data from which mean and std are computed.
-    `target` : `str`, default `"x"`
-        Which element of the `(x, y)` pair to normalize.
-        `"x"` normalizes input, `"y"` normalizes output, `"both"` normalizes both
-        (using the same statistics — only valid when `D_x == D_y`).
+    data : np.ndarray of shape (T, D) or (N, T, D)
+        Reference data from which the per-feature mean and standard
+        deviation are computed. The last axis is treated as the
+        feature axis.
+    target : {"x", "y", "both"}
+        Which arm of the ``(x, y)`` pair to normalize. ``"both"`` is
+        only valid when ``D_x == D_y`` (the same statistics are used
+        for both arms).
 
     Returns
     -------
-    :type: `Transform`
-        `(x, y)` -> `(x', y')` where the selected target(s) are normalized.
+    Transform
+        ``(x, y) -> (x', y')`` where the selected arm(s) are
+        normalized.
+
+    Raises
+    ------
+    ValueError
+        If ``target`` is not one of ``"x"``, ``"y"``, ``"both"``.
 
     Examples
     --------
     ```python
-    zscore_x = zscore_normalize(X_train, target="x")        # normalize input
-    zscore_y = zscore_normalize(Y_train, target="y")        # normalize output
-    tf = compose(zscore_x, zscore_y)                        # both, independent stats
+    zscore_x = zscore_normalize(X_train, target="x")
+    zscore_y = zscore_normalize(Y_train, target="y")
+    transform = compose(zscore_x, zscore_y)  # independent stats per arm
     ```
     """
     if target not in ("x", "y", "both"):
@@ -69,20 +79,25 @@ def gaussian_noise(
     sigma: float = 0.1,
     rng: np.random.Generator | None = None,
 ) -> Transform:
-    """Return a `Transform` that adds Gaussian noise to the input (for data augmentation).
+    """Build a `Transform` that perturbs the input with Gaussian noise.
+
+    The noise is drawn at sample-access time, so each pass through
+    the dataset sees fresh noise — making this suitable for
+    on-the-fly data augmentation. Only the input arm ``x`` is
+    perturbed; ``y`` is returned unchanged.
 
     Parameters
     ----------
-    `sigma` : `float`, default `0.1`
+    sigma : float, default 0.1
         Standard deviation of the noise.
-    `rng` : `np.random.Generator` or `None`, default `None`
-        Random number generator for reproducibility.
-        If `None`, a new unseeded generator is created.
+    rng : np.random.Generator or None, default None
+        Random number generator for reproducibility. When ``None``,
+        a fresh unseeded generator is created.
 
     Returns
     -------
-    :type: `Transform`
-        `(x, y)` -> `(x + noise, y)`
+    Transform
+        ``(x, y) -> (x + noise, y)``.
     """
     rng = np.random.default_rng(rng)
 
@@ -94,13 +109,24 @@ def gaussian_noise(
 
 
 def compose(*transforms: Transform) -> Transform:
-    """Return a `Transform` that applies multiple transforms in left-to-right order.
+    """Compose multiple transforms into a single left-to-right pipeline.
+
+    Parameters
+    ----------
+    *transforms : Transform
+        Transforms to apply in order. The output of each transform
+        feeds the next.
+
+    Returns
+    -------
+    Transform
+        ``(x, y) -> transforms[-1](... transforms[1](transforms[0](x, y)))``.
 
     Examples
     --------
     ```python
-    transform = compose(zscore_normalize(X_train), gaussian_noise(0.05))
-    # zscore is applied first, then noise
+    transform = compose(zscore_normalize(X_train, target="x"), gaussian_noise(0.05))
+    # z-score is applied first, then noise is added on top
     ```
     """
 

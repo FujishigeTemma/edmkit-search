@@ -6,22 +6,44 @@ from .transforms import Transform
 
 
 class Dataset:
-    """Time series dataset for X -> Y mapping.
+    """Time-series dataset of paired input/output sequences.
+
+    Holds an input array ``X`` and a target array ``Y`` sharing a common
+    time axis, plus an optional `Transform` applied lazily at
+    ``__getitem__`` time. Inputs are cast to ``float32`` and a 1D ``Y``
+    is auto-promoted to ``(T, 1)`` so downstream code can treat the
+    target as 2D uniformly.
 
     Parameters
     ----------
-    `X` : `np.ndarray` of shape `(T, D_x)`
+    X : np.ndarray of shape (T, D_x)
         Input time series.
-    `Y` : `np.ndarray` of shape `(T, D_y)` or `(T,)`
-        Output time series. 1D is auto-promoted to `(T, 1)`.
-    `transform` : :type: `Transform` or `None`, default `None`
-        `(x, y)` -> `(x', y')` closure for preprocessing / augmentation.
+    Y : np.ndarray of shape (T, D_y) or (T,)
+        Target time series. 1D input is promoted to ``(T, 1)``.
+    transform : Transform or None, default None
+        ``(x, y) -> (x', y')`` closure applied at indexing time. Used
+        for preprocessing or on-the-fly data augmentation.
 
     Raises
     ------
-    `ValueError`
-        If `X` is not 2-dimensional, `Y` is not 1D or 2D,
-        or if `T` dimensions mismatch.
+    ValueError
+        - If ``X`` is not 2-dimensional.
+        - If ``Y`` is not 1D or 2D.
+        - If ``X`` and ``Y`` have different lengths along the time axis.
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+
+    from edmkit.search.dataset import Dataset, zscore_normalize
+
+    X = np.random.default_rng(0).standard_normal((1000, 8))
+    Y = X[:, :1]
+
+    data = Dataset(X, Y, transform=zscore_normalize(X, target="x"))
+    x, y = data[0]
+    ```
     """
 
     def __init__(
@@ -56,17 +78,32 @@ class Dataset:
 
 
 class Subset(Dataset):
-    """A view into a `Dataset` selected by index, without copying data.
+    """A non-copying view into a `Dataset` restricted to selected rows.
 
-    This is a `Dataset` subtype, so row views can be passed anywhere a
-    dataset is expected.
+    ``Subset`` is a ``Dataset`` subtype, so it can be passed anywhere
+    a dataset is expected (e.g. as the train/validation arms of a
+    fold). ``X`` and ``Y`` are materialized lazily via
+    ``cached_property``.
 
     Parameters
     ----------
-    `dataset` : :type: `Dataset`
-        The underlying dataset.
-    `indices` : `np.ndarray`
-        Indices into `dataset` to expose.
+    dataset : Dataset
+        Underlying dataset.
+    indices : np.ndarray
+        1D integer indices selecting rows of ``dataset`` to expose.
+        The exposed length is ``len(indices)``.
+
+    Examples
+    --------
+    ```python
+    import numpy as np
+
+    from edmkit.search.dataset import Dataset, Subset
+
+    data = Dataset(X, Y)
+    train = Subset(data, np.arange(800))
+    validation = Subset(data, np.arange(800, 1000))
+    ```
     """
 
     def __init__(self, dataset: Dataset, indices: np.ndarray):

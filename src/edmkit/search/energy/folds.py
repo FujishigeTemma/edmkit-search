@@ -21,6 +21,49 @@ def folds(
     weight: WeightFunc,
     batch_size: int = 10000,
 ) -> tuple[Contexts, Plan]:
+    """Build a multi-fold `Plan` that scores each state as a weighted improvement over the previous step.
+
+    Each state is scored on every fold to obtain a per-fold metric
+    vector. The energy reported for the state is the ``weight``-ed sum
+    of ``(metric - previous_metric)`` across folds, so the search is
+    driven by the *delta* relative to the parent state. The per-fold
+    metric vector is then carried forward as the new context.
+
+    The weighting function (e.g. `softmax`) is applied to the
+    incoming contexts and decides how strongly each fold contributes
+    to the energy — making this a per-fold attention mechanism over
+    the search trajectory.
+
+    Parameters
+    ----------
+    data : dataset.Dataset
+        Dataset whose columns are selected by each state.
+    folds : Sequence[Fold]
+        Folds to score on. Must be non-empty.
+    predict : PredictFunc
+        Prediction function with signature ``(X, Y, Q) -> predictions``.
+    metric : MetricFunc
+        Per-fold reducer. Lower must mean better.
+    weight : WeightFunc
+        Function ``(N, K) -> (N, K)`` producing per-fold weights from
+        the incoming per-fold context.
+    batch_size : int, default 10000
+        Number of states processed in a single job.
+
+    Returns
+    -------
+    initial : Contexts
+        Initial context of shape ``(1, K)`` filled with zeros, where
+        ``K = len(folds)``. The zero baseline means the first step's
+        energy is just the weighted metric.
+    plan : Plan
+        Plan that yields one job per ``batch_size`` chunk of states.
+
+    Raises
+    ------
+    ValueError
+        If ``folds`` is empty.
+    """
     if len(folds) == 0:
         raise ValueError("folds must be non-empty")
 

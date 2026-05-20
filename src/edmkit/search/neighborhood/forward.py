@@ -7,12 +7,30 @@ from .neighborhood import Neighborhood
 
 
 def forward(n: int) -> Neighborhood:
-    """Forward search over `n` candidate indices.
+    """Build a forward-selection `Neighborhood` over ``n`` candidate indices.
 
-    Each parent state of length `d` (assumed to hold unique indices in `[0, n)`)
-    expands into exactly `n - d` children — one per index not yet selected. Within
-    a parent, children are emitted in a per-row random order; across parents, the
-    parent order is preserved.
+    Each parent state of length ``d`` (assumed to hold unique indices
+    in ``[0, n)``) expands into exactly ``n - d`` children — one per
+    index not yet selected. Within a single parent, the order of the
+    emitted children is randomized via the supplied generator so that
+    downstream truncations (e.g. beam ``width``) do not systematically
+    favour low indices; across parents, the parent order is preserved.
+
+    Parameters
+    ----------
+    n : int
+        Size of the candidate universe. Must be non-negative.
+
+    Returns
+    -------
+    Neighborhood
+        ``(parents, rng) -> (children, parents_idx)`` with
+        ``children.shape == (N * (n - d), d + 1)``.
+
+    Raises
+    ------
+    ValueError
+        If ``n`` is negative.
     """
     if n < 0:
         raise ValueError(f"n must be non-negative, got {n}")
