@@ -1,6 +1,6 @@
 [project]
 name = "edmkit-search"
-version = "0.0.1a2"
+version = "0.0.1a3"
 description = "Trajectory construction on an energy landscape for edmkit"
 authors = [{ name = "FUJISHIGE TEMMA", email = "tenma.x0@gmail.com" }]
 license = "MIT"
@@ -18,7 +18,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "edmkit>=0.0.9",
+    "edmkit>=0.0.10",
     "numpy>=2.4.4",
 ]
 
