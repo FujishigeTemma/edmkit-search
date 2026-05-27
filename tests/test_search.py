@@ -70,6 +70,19 @@ def per_fold_loss(
     return out
 
 
+def within_per_fold_loss(
+    X: np.ndarray,
+    folds: Sequence[Fold],
+    indices: Sequence[int],
+) -> np.ndarray:
+    columns = list(indices)
+    out = np.empty(len(folds), dtype=np.float64)
+    for f, fold in enumerate(folds):
+        prediction = colsum_predict(X[fold.train][:, columns], X[fold.train][:, columns], X[fold.validation][:, columns])
+        out[f] = float(metric_mae(prediction, X[fold.validation][:, columns]))
+    return out
+
+
 # -------------------------------------------------------------------- helpers
 
 
@@ -291,17 +304,17 @@ class TestStrategy:
             strategy.beam(E, neighborhood.forward(2), width=0)
 
 
-# --------------------------------------------------------------------- holdout
+# --------------------------------------------------------------- cross holdout
 
 
-class TestHoldout:
+class TestCrossHoldout:
     def test_step_matches_naive_reference(self) -> None:
         X, Y = arrays()
         X_train, X_val = X[:4], X[4:]
         Y_train, Y_val = Y[:4], Y[4:]
         states = np.array([[0, 1], [1, 2]], dtype=np.int64)
 
-        initial, plan = energy.holdout(
+        initial, plan = energy.cross.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,
@@ -325,7 +338,7 @@ class TestHoldout:
 
     def test_initial_is_empty_context(self) -> None:
         X, Y = arrays()
-        initial, _ = energy.holdout(
+        initial, _ = energy.cross.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,
@@ -335,13 +348,13 @@ class TestHoldout:
         assert initial.shape == (1, 0)
 
 
-# ----------------------------------------------------------------------- folds
+# ----------------------------------------------------------------- cross folds
 
 
-class TestFolds:
+class TestCrossFolds:
     def test_initial_is_zero_baseline(self) -> None:
         X, Y = arrays()
-        initial, _ = energy.folds(
+        initial, _ = energy.cross.folds(
             data=Dataset(X, Y),
             folds=folds_for_arrays(),
             predict=colsum_predict,
@@ -354,7 +367,7 @@ class TestFolds:
     def test_first_step_with_zeros_context_equals_mean_loss(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        initial, plan = energy.folds(
+        initial, plan = energy.cross.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
@@ -376,7 +389,7 @@ class TestFolds:
     def test_two_step_delta_matches_naive_reference(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        initial, plan = energy.folds(
+        initial, plan = energy.cross.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
@@ -401,7 +414,7 @@ class TestFolds:
     def test_mixed_contexts_in_one_batch_evaluate_independently(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        initial, plan = energy.folds(
+        initial, plan = energy.cross.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
@@ -429,7 +442,7 @@ class TestFolds:
     def test_empty_folds_raises(self) -> None:
         X, Y = arrays()
         with pytest.raises(ValueError, match="folds"):
-            energy.folds(
+            energy.cross.folds(
                 data=Dataset(X, Y),
                 folds=[],
                 predict=colsum_predict,
@@ -438,12 +451,106 @@ class TestFolds:
             )
 
 
-# ------------------------------------------------------------------------- loo
+# -------------------------------------------------------------- within predict
 
 
-class TestLoo:
+class TestWithin:
+    def test_holdout_scores_selected_columns_against_themselves(self) -> None:
+        X, _ = arrays()
+        states = np.array([[0, 1], [1, 2]], dtype=np.int64)
+
+        initial, plan = energy.within.holdout(
+            data=Dataset(X, X),
+            fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
+            predict=colsum_predict,
+            metric=metric_mae,
+        )
+        E = to_energy(initial, plan)
+
+        expected = [
+            float(
+                metric_mae(
+                    colsum_predict(X[:4, list(row)], X[:4, list(row)], X[4:, list(row)]),
+                    X[4:, list(row)],
+                )
+            )
+            for row in states
+        ]
+        energies, new_contexts = E(states, np.empty((2, 0), dtype=np.float64))
+
+        np.testing.assert_allclose(energies, expected)
+        assert new_contexts.shape == (2, 0)
+
+    def test_folds_delta_matches_naive_reference(self) -> None:
+        X, _ = arrays()
+        split = folds_for_arrays()
+        initial, plan = energy.within.folds(
+            data=Dataset(X, X),
+            folds=split,
+            predict=colsum_predict,
+            metric=metric_mae,
+            weight=uniform,
+        )
+        E = to_energy(initial, plan)
+
+        first = np.array([[0], [1]], dtype=np.int64)
+        _, ctxs = E(first, np.zeros((2, len(split)), dtype=np.float64))
+
+        second = np.array([[0, 2], [1, 2]], dtype=np.int64)
+        energies, _ = E(second, ctxs)
+
+        expected = []
+        for parent_loss, child in zip(ctxs, second, strict=True):
+            child_loss = within_per_fold_loss(X, split, list(child))
+            expected.append(float(uniform(parent_loss) @ (child_loss - parent_loss)))
+
+        np.testing.assert_allclose(energies, expected)
+
+    def test_folds_empty_folds_raises(self) -> None:
+        X, _ = arrays()
+        with pytest.raises(ValueError, match="folds"):
+            energy.within.folds(
+                data=Dataset(X, X),
+                folds=[],
+                predict=colsum_predict,
+                metric=metric_mae,
+                weight=uniform,
+            )
+
+    def test_loo_passes_selected_columns_as_input_and_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        within_module = importlib.import_module("edmkit.search.energy.within.loo")
+        calls: list[tuple[np.ndarray, np.ndarray, int]] = []
+
+        def fake_loo(X: np.ndarray, Y: np.ndarray, *, theiler_window: int) -> np.ndarray:
+            calls.append((X.copy(), Y.copy(), theiler_window))
+            return np.zeros_like(Y)
+
+        monkeypatch.setattr(within_module.simplex_projection, "loo", fake_loo)
+        X, _ = arrays()
+        initial, plan = within_module.loo(data=Dataset(X, X), metric=metric_mae, theiler_window=3)
+        E = to_energy(initial, plan)
+
+        E(np.array([[0, 2]], dtype=np.int64), np.empty((1, 0), dtype=np.float64))
+
+        assert len(calls) == 1
+        X_call, Y_call, theiler_window = calls[0]
+        expected = X[:, [0, 2]][np.newaxis, :, :]
+        np.testing.assert_array_equal(X_call, expected)
+        np.testing.assert_array_equal(Y_call, expected)
+        assert theiler_window == 3
+
+    def test_loo_negative_theiler_window_raises(self) -> None:
+        X, _ = arrays()
+        with pytest.raises(ValueError, match="non-negative"):
+            energy.within.loo(data=Dataset(X, X), metric=metric_mae, theiler_window=-1)
+
+
+# ------------------------------------------------------------------- cross loo
+
+
+class TestCrossLoo:
     def test_step_passes_theiler_window_to_simplex(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        loo_module = importlib.import_module("edmkit.search.energy.loo")
+        loo_module = importlib.import_module("edmkit.search.energy.cross.loo")
         calls: list[int] = []
 
         def fake_loo(X: np.ndarray, Y: np.ndarray, *, theiler_window: int) -> np.ndarray:
@@ -462,7 +569,7 @@ class TestLoo:
     def test_negative_theiler_window_raises(self) -> None:
         X, Y = arrays()
         with pytest.raises(ValueError, match="non-negative"):
-            energy.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=-1)
+            energy.cross.loo(data=Dataset(X, Y), metric=metric_mae, theiler_window=-1)
 
 
 # ------------------------------------------------------------------ trajectory
@@ -474,7 +581,7 @@ class TestTrajectory:
     def test_context_flows_through_beam_in_lockstep_with_parents(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        initial, plan = energy.folds(
+        initial, plan = energy.cross.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
@@ -511,7 +618,7 @@ class TestTrajectory:
     def test_run_completes_with_readonly_arrays(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
-        base_initial, base_plan = energy.folds(
+        base_initial, base_plan = energy.cross.folds(
             data=Dataset(X, Y),
             folds=split,
             predict=colsum_predict,
@@ -545,7 +652,7 @@ class TestTrajectory:
 
     def test_step_is_deterministic(self) -> None:
         X, Y = arrays()
-        initial, plan = energy.holdout(
+        initial, plan = energy.cross.holdout(
             data=Dataset(X, Y),
             fold=Fold(train=np.arange(4), validation=np.arange(4, 6)),
             predict=colsum_predict,

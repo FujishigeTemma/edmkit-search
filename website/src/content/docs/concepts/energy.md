@@ -35,7 +35,7 @@ A `Plan` is a factory: given the current batch, it yields a sequence of independ
 The idiomatic `Energy` is a closure over `plan`, `initial_context`, and your executor:
 
 ```python
-initial_context, plan = energy.holdout(...)
+initial_context, plan = energy.cross.holdout(...)
 
 with ThreadPoolExecutor() as pool:
     def E(states, contexts):
@@ -91,7 +91,7 @@ from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import temporal_fold
 
 inner = temporal_fold(train.X.shape[0], 0.75)
-initial_context, plan = energy.holdout(
+initial_context, plan = energy.cross.holdout(
     data=train, fold=inner,
     predict=simplex_projection, metric=corr,
     batch_size=64,
@@ -103,7 +103,7 @@ initial_context, plan = energy.holdout(
 Predict each row of the training arm from its in-library neighbours, excluding any within `theiler_window` time steps (blocking the trivial "next step is right next door" leak).
 
 ```python
-initial_context, plan = energy.loo(data=train, metric=corr, theiler_window=0)
+initial_context, plan = energy.cross.loo(data=train, metric=corr, theiler_window=0)
 ```
 
 :::note[`theiler_window` default is 0]
@@ -126,7 +126,7 @@ inner_folds = sliding_folds(
 # ----------[======t(0.4)======][=v(0.2)=]----------
 # --------------------[======t(0.4)======][=v(0.2)=]
 
-initial_context, plan = energy.folds(
+initial_context, plan = energy.cross.folds(
     data=train,
     folds=inner_folds,
     predict=simplex_projection,
@@ -154,5 +154,4 @@ A sweep over `T ∈ {0.1, 1, 10}` is a natural ablation; see [`edmkit-search-exp
 
 ## Writing your own energy
 
-Return an `initial` context of shape `(1, K)` and a `plan(states, contexts)` yielding independent jobs (default-bind `start`/`end` in each job to avoid the closure trap). Copying [`energy/holdout.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/src/edmkit/search/energy/holdout.py) is the fastest path.
-
+Return an `initial` context of shape `(1, K)` and a `plan(states, contexts)` yielding independent jobs (default-bind `start`/`end` in each job to avoid the closure trap). Copying [`energy/cross/holdout.py`](https://github.com/FujishigeTemma/edmkit-search/blob/main/src/edmkit/search/energy/cross/holdout.py) is the fastest path.

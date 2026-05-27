@@ -4,10 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 from edmkit.embedding import scan, select
 from edmkit.metrics import mean_rho
-from edmkit.search import energy, neighborhood, state, strategy
-from edmkit.search.dataset import Dataset, Subset
 from edmkit.simplex_projection import simplex_projection
 from edmkit.splits import temporal_fold
+
+from edmkit.search import energy, neighborhood, state, strategy
+from edmkit.search.dataset import Dataset, Subset
 
 E_range = list(range(1, 10 + 1))
 tau_range = list(range(1, 5 + 1))
@@ -101,7 +102,7 @@ def main() -> None:
         fold2 = temporal_fold(train.X.shape[0], 0.75)
         print(f"fold2 - train: {fold2.train.shape[0]}, validation: {fold2.validation.shape[0]}")
 
-        initial_context, plan = energy.holdout(
+        initial_context, plan = energy.cross.holdout(
             data=train,
             fold=fold2,
             predict=simplex_projection,

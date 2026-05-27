@@ -1,13 +1,19 @@
 [project]
 name = "edmkit-search"
-version = "0.0.1a3"
+version = "0.1.0"
 description = "Trajectory construction on an energy landscape for edmkit"
 authors = [{ name = "FUJISHIGE TEMMA", email = "tenma.x0@gmail.com" }]
 license = "MIT"
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.13"
-keywords = ["edm", "empirical-dynamic-modeling", "feature-selection", "search", "time-series"]
+keywords = [
+    "edm",
+    "empirical-dynamic-modeling",
+    "feature-selection",
+    "search",
+    "time-series",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -17,10 +23,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Typing :: Typed",
 ]
-dependencies = [
-    "edmkit>=0.0.10",
-    "numpy>=2.4.4",
-]
+dependencies = ["edmkit>=0.0.10", "numpy>=2.4.4"]
 
 [project.urls]
 Homepage = "https://github.com/FujishigeTemma/edmkit-search"

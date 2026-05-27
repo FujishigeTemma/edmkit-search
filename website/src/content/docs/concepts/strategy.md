@@ -81,7 +81,7 @@ If you need the whole beam at each step, call `step` directly in your own loop.
 For forward selection, the starting frontier is the empty state, the energy's `initial_context`, and an infinite energy that any real score beats:
 
 ```python
-initial_context, plan = energy.holdout(...)
+initial_context, plan = energy.cross.holdout(...)
 initial = strategy.Frontier(
     states=state.initial(),                                  # (1, 0)
     contexts=initial_context,                                # (1, K)

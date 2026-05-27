@@ -21,7 +21,7 @@ flowchart LR
     I["temporal_fold(len(train), 0.75)"]
     Ti["inner.train"]
     Vi["inner.validation"]
-    En[("energy.holdout(train, inner, ...)<br/>or energy.folds / energy.loo")]
+    En[("energy.cross.holdout(train, inner, ...)<br/>or energy.cross.folds / energy.cross.loo")]
     Ru["strategy.run(...) → trace"]
     Sc["score validation.Y vs<br/>predictions per step → val[j]"]
     D --> O
@@ -40,7 +40,7 @@ flowchart LR
 Two folds, two jobs:
 
 - **Outer fold** (`outer.train` / `outer.validation`) — the search's *world* and *exam*. The validation arm is touched exactly once, at the end, to score the trace.
-- **Inner fold(s)** (built from `train` only) — the data the **Energy** sees during search. `energy.holdout` uses one fold; `energy.folds` uses several sliding folds; `energy.loo` uses none.
+- **Inner fold(s)** (built from `train` only) — the data the **Energy** sees during search. `energy.cross.holdout` uses one fold; `energy.cross.folds` uses several sliding folds; `energy.cross.loo` uses none.
 
 If the search peeks at the outer arm, the per-step validation curve stops being an unbiased estimate of generalization.
 
@@ -134,11 +134,11 @@ with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
 
     for metric_label, metric in [("Corr", corr), ("MAE", mae), ("RMSE", rmse)]:
         energies = [
-            ("holdout",       energy.holdout(data=train, fold=inner, predict=simplex_projection, metric=metric, batch_size=2500)),
-            ("folds (T=0.1)", energy.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(0.1), batch_size=2000)),
-            ("folds (T=1)",   energy.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(1.0), batch_size=2000)),
-            ("folds (T=10)",  energy.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(10.0), batch_size=2000)),
-            ("loo",           energy.loo(data=train, metric=metric, batch_size=4000)),
+            ("holdout",       energy.cross.holdout(data=train, fold=inner, predict=simplex_projection, metric=metric, batch_size=2500)),
+            ("folds (T=0.1)", energy.cross.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(0.1), batch_size=2000)),
+            ("folds (T=1)",   energy.cross.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(1.0), batch_size=2000)),
+            ("folds (T=10)",  energy.cross.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(10.0), batch_size=2000)),
+            ("loo",           energy.cross.loo(data=train, metric=metric, batch_size=4000)),
         ]
 
         for energy_label, (initial_context, plan) in energies:

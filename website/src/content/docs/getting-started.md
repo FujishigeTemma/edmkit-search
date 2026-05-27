@@ -131,17 +131,17 @@ The pre-filter and the search **embed differently**:
 - **Pre-filter (`scan`):** for each *single* column, build a lagged embedding `(E, τ)` and predict `Y` from it.
 - **Search:** at each step, take the *current subset of columns* as the state vector at time `t` — no lag, one dimension per selected column.
 
-That asymmetry matters when reusing parameters: `theiler_window` for [`energy.loo`](/edmkit-search/concepts/energy/) defaults to `0` because the search does not lag-embed.
+That asymmetry matters when reusing parameters: `theiler_window` for [`energy.cross.loo`](/edmkit-search/concepts/energy/) defaults to `0` because the search does not lag-embed.
 
 ## Step 4 — Build the energy from an inner fold
 
-The **energy** is what the search minimizes. The simplest scorer, `energy.holdout`, fits on one inner-fold train arm and scores on that fold's validation arm:
+The **energy** is what the search minimizes. The simplest scorer, `energy.cross.holdout`, fits on one inner-fold train arm and scores on that fold's validation arm:
 
 ```python
 from edmkit.search import energy, neighborhood, state, strategy
 
 inner = temporal_fold(train.X.shape[0], 0.75)
-initial_context, plan = energy.holdout(
+initial_context, plan = energy.cross.holdout(
     data=train,
     fold=inner,
     predict=simplex_projection,
@@ -150,7 +150,7 @@ initial_context, plan = energy.holdout(
 )
 ```
 
-`energy.holdout` does not return a callable directly. It returns `(initial_context, plan)`:
+`energy.cross.holdout` does not return a callable directly. It returns `(initial_context, plan)`:
 
 - `initial_context` is the energy's per-state state, threaded through the search. `holdout` carries width 0; `folds` carries the previous step's per-fold metric vector.
 - `plan` is a factory: given a batch of states, it yields independent jobs.
@@ -226,9 +226,9 @@ A single `(metric, energy, strategy)` choice is a starting point, not an answer.
 ```python
 for metric_label, metric in [("Corr", corr), ("MAE", mae), ("RMSE", rmse)]:
     for energy_label, (initial_context, plan) in [
-        ("holdout", energy.holdout(data=train, fold=inner, predict=simplex_projection, metric=metric)),
-        ("folds T=1", energy.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(1.0))),
-        ("loo", energy.loo(data=train, metric=metric)),
+        ("holdout", energy.cross.holdout(data=train, fold=inner, predict=simplex_projection, metric=metric)),
+        ("folds T=1", energy.cross.folds(data=train, folds=inner_folds, predict=simplex_projection, metric=metric, weight=energy.weight.softmax(1.0))),
+        ("loo", energy.cross.loo(data=train, metric=metric)),
     ]:
         E = to_energy(initial_context, plan)
         for strategy_label, S in [

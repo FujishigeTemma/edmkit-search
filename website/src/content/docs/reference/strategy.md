@@ -160,7 +160,7 @@ import numpy as np
 
 from edmkit.search import energy, neighborhood, state, strategy
 
-initial_context, plan = energy.holdout(...)
+initial_context, plan = energy.cross.holdout(...)
 
 with ThreadPoolExecutor() as pool:
     def E(states, contexts):

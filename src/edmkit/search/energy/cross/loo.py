@@ -7,7 +7,7 @@ from edmkit import simplex_projection
 from edmkit.search import dataset
 from edmkit.search.state import States
 
-from .energy import Contexts, Plan
+from ..energy import Contexts, Plan
 
 
 def loo(
@@ -17,35 +17,30 @@ def loo(
     theiler_window: int = 0,
     batch_size: int = 10000,
 ) -> tuple[Contexts, Plan]:
-    """Build a leave-one-out `Plan` that scores each state by self-prediction.
+    """Build a cross-target leave-one-out `Plan` that scores each state.
 
     For each state in the batch, the corresponding column-subset of
     ``data.X`` is used as the library for simplex-projection LOO; each
     library point is predicted from its in-library neighbours
     (excluding temporally close points via the Theiler window), and
-    the predictions are scored against ``data.Y`` with ``metric``. No
-    holdout fold is consumed — useful when training data is scarce.
+    the predictions are scored against ``data.Y`` with ``metric``.
 
     Parameters
     ----------
     data : dataset.Dataset
         Dataset whose columns are selected by each state.
     metric : MetricFunc
-        Reducer turning ``(predictions, observations)`` into a scalar
-        per state. Lower must mean better.
+        Reducer turning predictions and observations into a scalar per
+        state. Lower must mean better.
     theiler_window : int, default 0
-        Theiler window half-width passed to `simplex_projection.loo`.
-        Library points ``j`` with ``|i - j| <= theiler_window`` are
-        excluded when predicting point ``i``. For lagged-embedded
-        inputs, ``(E - 1) * tau`` is the conventional choice.
+        Theiler window half-width passed to ``simplex_projection.loo``.
     batch_size : int, default 10000
         Number of states processed in a single job.
 
     Returns
     -------
     initial : Contexts
-        Initial context of shape ``(1, 0)`` — LOO carries no per-state
-        state across steps.
+        Initial context of shape ``(1, 0)``.
     plan : Plan
         Plan that yields one job per ``batch_size`` chunk of states.
 
@@ -53,25 +48,6 @@ def loo(
     ------
     ValueError
         If ``theiler_window`` is negative.
-
-    Examples
-    --------
-    ```python
-    from edmkit.metrics import mean_rho
-
-    from edmkit.search import energy
-
-
-    def corr(predictions, observations):  # strategies minimize energy
-        return 1.0 - mean_rho(predictions.reshape(observations.shape), observations)
-
-
-    initial_context, plan = energy.loo(
-        data=train,
-        metric=corr,
-        theiler_window=0,
-    )
-    ```
     """
     if theiler_window < 0:
         raise ValueError("theiler_window must be non-negative")

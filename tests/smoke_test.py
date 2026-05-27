@@ -42,18 +42,18 @@ def test_minimal_greedy_run():
     train = Subset(data, outer.train)
     inner = temporal_fold(len(train), 0.75)
 
-    initial_ctx, plan = energy.holdout(
+    initial_context, plan = energy.cross.holdout(
         data=train,
         fold=Fold(train=inner.train, validation=inner.validation),
         predict=simplex_projection,
         metric=corr,
     )
-    E = to_energy(initial_ctx, plan)
+    E = to_energy(initial_context, plan)
     N = neighborhood.forward(data.X.shape[1])
     step = strategy.greedy(E, N)
     initial = strategy.Frontier(
         states=state.initial(),
-        contexts=initial_ctx,
+        contexts=initial_context,
         energies=np.array([float("inf")], dtype=np.float64),
     )
 

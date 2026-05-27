@@ -57,7 +57,7 @@ validation = Subset(data, outer.validation)
 [`edmkit.splits`](https://fujishigetemma.github.io/edmkit/reference/splits/) provides the index generators:
 
 - `temporal_fold(n, train_ratio)` — one chronological split.
-- `sliding_folds(n, train_size, validation_size, stride)` — a sequence of fixed-size windows, used by `energy.folds`.
+- `sliding_folds(n, train_size, validation_size, stride)` — a sequence of fixed-size windows, used by `energy.cross.folds`.
 - `expanding_folds(...)` — a sequence with a growing train window.
 
 ## Transforms
