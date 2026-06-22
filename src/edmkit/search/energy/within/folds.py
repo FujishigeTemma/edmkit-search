@@ -25,7 +25,8 @@ def folds(
 
     This is the within-state analogue of ``energy.cross.folds``: each
     state is scored on every fold, and the reported energy is the
-    weighted delta from the incoming per-fold context.
+    weighted delta from the incoming per-fold context. Each state
+    forecasts its own selected columns: ``X[:, state] -> Y[:, state]``.
 
     Parameters
     ----------
@@ -74,8 +75,9 @@ def folds(
                 metrics = np.empty((size, n_folds), dtype=np.float64)
                 for i, (train, validation) in enumerate(subsets):
                     X = np.ascontiguousarray(train.X[:, idx].transpose(1, 0, 2))
+                    Y = np.ascontiguousarray(train.Y[:, idx].transpose(1, 0, 2))
                     Q = np.ascontiguousarray(validation.X[:, idx].transpose(1, 0, 2))
-                    metrics[:, i] = metric(predict(X, X, Q), Q)
+                    metrics[:, i] = metric(predict(X, Y, Q), np.ascontiguousarray(validation.Y[:, idx].transpose(1, 0, 2)))
                 return (
                     slice(start, end),
                     (weight(contexts[start:end]) * (metrics - contexts[start:end])).sum(axis=1),

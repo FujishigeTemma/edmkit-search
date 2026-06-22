@@ -272,7 +272,8 @@ Build a multi-fold `Plan` for within-state prediction.
 
 This is the within-state analogue of ``energy.cross.folds``: each
 state is scored on every fold, and the reported energy is the
-weighted delta from the incoming per-fold context.
+weighted delta from the incoming per-fold context. Each state
+forecasts its own selected columns: ``X[:, state] -> Y[:, state]``.
 
 **Parameters:**
 
@@ -314,10 +315,9 @@ holdout(*, data: dataset.Dataset, fold: Fold, predict: PredictFunc, metric: Metr
 
 Build a holdout-validation `Plan` for within-state prediction.
 
-For each state, the selected columns of ``data.X`` define both the
-library/query coordinates and the prediction target. This scores
-whether the selected coordinate set is internally predictable:
-``X[:, state] -> X[:, state]``.
+For each state, the selected columns of ``data.X`` are the library/
+query coordinates and the *same* selected columns of ``data.Y`` are
+the prediction target: ``X[:, state] -> Y[:, state]``.
 
 **Parameters:**
 
@@ -353,7 +353,8 @@ loo(*, data: dataset.Dataset, metric: MetricFunc, theiler_window: int = 0, batch
 Build a leave-one-out `Plan` for within-state prediction.
 
 For each state, the selected columns of ``data.X`` are predicted
-from their in-library neighbours and scored against themselves.
+from their in-library neighbours and scored against the *same*
+selected columns of ``data.Y`` (``X[:, state] -> Y[:, state]``).
 
 **Parameters:**
 

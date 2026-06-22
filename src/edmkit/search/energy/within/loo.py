@@ -20,7 +20,8 @@ def loo(
     """Build a leave-one-out `Plan` for within-state prediction.
 
     For each state, the selected columns of ``data.X`` are predicted
-    from their in-library neighbours and scored against themselves.
+    from their in-library neighbours and scored against the *same*
+    selected columns of ``data.Y`` (``X[:, state] -> Y[:, state]``).
 
     Parameters
     ----------
@@ -60,7 +61,8 @@ def loo(
                 size = end - start
                 idx = states[start:end]
                 X = np.ascontiguousarray(data.X[:, idx].transpose(1, 0, 2))
-                energies = metric(simplex_projection.loo(X, X, theiler_window=theiler_window), X)
+                Y = np.ascontiguousarray(data.Y[:, idx].transpose(1, 0, 2))
+                energies = metric(simplex_projection.loo(X, Y, theiler_window=theiler_window), Y)
                 return (
                     slice(start, end),
                     energies,

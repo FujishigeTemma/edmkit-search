@@ -21,10 +21,9 @@ def holdout(
 ) -> tuple[Contexts, Plan]:
     """Build a holdout-validation `Plan` for within-state prediction.
 
-    For each state, the selected columns of ``data.X`` define both the
-    library/query coordinates and the prediction target. This scores
-    whether the selected coordinate set is internally predictable:
-    ``X[:, state] -> X[:, state]``.
+    For each state, the selected columns of ``data.X`` are the library/
+    query coordinates and the *same* selected columns of ``data.Y`` are
+    the prediction target: ``X[:, state] -> Y[:, state]``.
 
     Parameters
     ----------
@@ -60,8 +59,9 @@ def holdout(
                 size = end - start
                 idx = states[start:end]
                 X = np.ascontiguousarray(train.X[:, idx].transpose(1, 0, 2))
+                Y = np.ascontiguousarray(train.Y[:, idx].transpose(1, 0, 2))
                 Q = np.ascontiguousarray(validation.X[:, idx].transpose(1, 0, 2))
-                energies = metric(predict(X, X, Q), Q)
+                energies = metric(predict(X, Y, Q), np.ascontiguousarray(validation.Y[:, idx].transpose(1, 0, 2)))
                 return (
                     slice(start, end),
                     energies,

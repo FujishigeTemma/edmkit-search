@@ -1,6 +1,6 @@
 [project]
 name = "edmkit-search"
-version = "0.1.1"
+version = "0.2.0"
 description = "Trajectory construction on an energy landscape for edmkit"
 authors = [{ name = "FUJISHIGE TEMMA", email = "tenma.x0@gmail.com" }]
 license = "MIT"
@@ -34,7 +34,13 @@ Repository = "https://github.com/FujishigeTemma/edmkit-search"
 Issues = "https://github.com/FujishigeTemma/edmkit-search/issues"
 
 [dependency-groups]
-dev = ["hypothesis>=6.152.5", "pytest>=9.0.3", "ruff>=0.15.12", "ty>=0.0.35"]
+dev = [
+    "griffe2md>=1.5.0",
+    "hypothesis>=6.152.5",
+    "pytest>=9.0.3",
+    "ruff>=0.15.12",
+    "ty>=0.0.35",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
