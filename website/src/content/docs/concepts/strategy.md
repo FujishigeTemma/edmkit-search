@@ -1,80 +1,62 @@
 ---
 title: Strategy
-description: What a strategy is, why greedy and beam are different operating points, and how the runner drives them.
+description: What a strategy is, why greedy and beam are different operating points, and how a strategy owns the search loop.
 ---
 
-A `Strategy` binds a `Neighborhood` and an `Energy` into one per-iteration transition.
+A `Strategy` binds a `Neighborhood` and an `Energy` into a full search:
 
 ```python
-type Step = Callable[[Frontier, np.random.Generator], Frontier]
+type Strategy = Callable[[Frontier, np.random.Generator], Iterator[Frontier]]
 ```
 
-Given the current frontier, a `Step` expands it via the `Neighborhood`, scores the children with the `Energy`, and selects which survive. The library ships `greedy`, `beam`, and a runner `run`.
+Given the initial frontier, a strategy owns the whole loop — expanding states via the `Neighborhood`, scoring them with the `Energy`, deciding which survive — and yields the best state found at each depth as a one-row frontier. Collecting the iterator yields the search trajectory. The library ships two factories, `greedy` and `beam`.
 
 ## Why two strategies
 
-- **`greedy`** commits to the single best child at every step. Cheapest possible, but a wrong early commit cannot be undone.
-- **`beam(width=W)`** keeps the `W` best children. Costs ~`W×` more, but can recover from an early choice that turns out subdominant.
+- **`greedy(depth=D)`** commits to the single best child at every depth. Cheapest possible, but a wrong early commit cannot be undone.
+- **`beam(width=W, depth=D, beams=B)`** runs **chokudai search**. A single beam is exactly classic beam search of width `W`; every extra beam goes back and expands the next-best states the earlier beams left behind, so the search widens precisely at the depths where the earlier beams committed. Costs ~`W×B` more than greedy, but can recover from an early choice that turns out subdominant.
 
-The canonical comparison is `{greedy, beam(width=3)}` on the same `(Energy, Neighborhood)`. If the beam's per-step validation curve is consistently below greedy's, the energy landscape is rugged enough to justify the extra cost.
+`greedy` is sugar for `beam(width=1, beams=1)` — one beam of width 1 *is* greedy selection.
 
-## The per-step transition
+The canonical comparison is `{greedy, beam(width=1, beams=3)}` on the same `(Energy, Neighborhood)`. If the beam's per-step validation curve is consistently below greedy's, the energy landscape is rugged enough to justify the extra cost.
 
-The `Frontier` (defined in [Search Loop](/edmkit-search/concepts/search-loop/)) is the loop's single piece of state. This is what `beam`'s step actually does:
-
-```python
-def step(frontier, rng):
-    children, parents = N(frontier.states, rng)
-    if children.shape[0] == 0:
-        return Frontier(children, frontier.contexts[:0], np.empty(0))
-
-    energies, contexts = E(children, frontier.contexts[parents])
-    kept = np.flatnonzero(energies <= cutoff)
-    order = kept[np.argsort(energies[kept], kind="stable")[:width]]
-
-    return Frontier(
-        states=children[order],
-        contexts=contexts[order],
-        energies=energies[order],
-    )
-```
-
-The whole library's runtime cost lives inside `E(children, ...)`.
-
-### beam
+## beam — chokudai search
 
 ```python
-step = strategy.beam(E, N, width=10, cutoff=float("inf"))
+S = strategy.beam(E, N, width=1, depth=8, beams=3, cutoff=float("inf"))
+trace = list(S(initial_frontier, np.random.default_rng(0)))
 ```
 
-Expand via `N`, score every child with `E`, drop children whose energy is strictly greater than `cutoff`, and keep the `width` survivors with the lowest energy. The argsort is *stable*, so ties resolve in the order the neighborhood emitted them — combined with [`forward`](/edmkit-search/concepts/neighborhood/) this yields a per-parent random tie-break.
-
-### greedy
+`beam` keeps one candidate queue per depth, seeded with the initial frontier at depth 0. Each *beam* is one pass over the depths in order:
 
 ```python
-step = strategy.greedy(E, N, cutoff=float("inf"))
+for _ in range(beams):
+    for d in range(depth):
+        parents = pop_lowest(queues[d], width)                    # popped states never return
+        children, parents_idx = N(parents.states, rng)            # (M, d+1), (M,)
+        energies, contexts = E(children, parents.contexts[parents_idx])  # (M,), (M, K)
+        push(queues[d + 1], survivors_below(cutoff))              # feed the next depth
 ```
 
-Sugar for `beam(E, N, width=1)`. Useful when you want a single trajectory.
+The whole library's runtime cost lives inside `E(children, ...)`. Everything around it is index gymnastics on the frozen `Frontier` (defined in [Search Loop](/edmkit-search/concepts/search-loop/)).
 
-## run — the top-level driver
+Popped states never return, so:
+
+- **`beams=1`** reduces to classic beam search of width `width` — each depth expands its top-`width` states exactly once.
+- **`beams=B`** re-visits every depth `B` times, expanding the next-best leftovers. The extra budget concentrates where the earlier beams' commitments were tightest, which is the property that makes chokudai search a strong anytime refinement of a fixed-width beam.
+
+Within one depth, pop-order ties resolve stably in insertion order — combined with [`forward`](/edmkit-search/concepts/neighborhood/)'s per-parent shuffle this yields a random tie-break.
+
+The trajectory contains, for each depth `1..depth`, the lowest-energy state found at that depth across all beams. Iteration stops early at the first depth the search never reached (e.g. when the neighborhood emits no children), so **`trace[j].states[0]` is the selected index set of length `j + 1`** regardless of `width` and `beams`.
+
+## greedy
 
 ```python
-trace = list(
-    strategy.run(
-        initial_frontier,
-        step,
-        max_steps=8,
-        rng=np.random.default_rng(0),
-    )
-)
+S = strategy.greedy(E, N, depth=8, cutoff=float("inf"))
+trace = list(S(initial_frontier, np.random.default_rng(0)))
 ```
 
-`run` iterates `step` from the initial frontier and **yields the single best survivor of each iteration** as a one-row frontier. The *full* post-step frontier is threaded into the next iteration internally.
-
-The iterator terminates when `step` returns an empty frontier or after `max_steps` iterations.
-
-If you need the whole beam at each step, call `step` directly in your own loop.
+Sugar for `beam(E, N, width=1, depth=8, beams=1)`. Useful when you want a single cheap trajectory.
 
 ## Initial frontier
 
@@ -89,9 +71,8 @@ initial = strategy.Frontier(
 )
 ```
 
-`run` does not constrain the initial frontier — backward elimination from a full state works the same way.
+The strategy does not constrain the initial frontier — backward elimination from a full state works the same way.
 
 ## Writing your own
 
-Any callable matching `Step = (Frontier, rng) -> Frontier'` works (tournament selection, mutation, restart-on-stall, etc.). Return a `Frontier`, respect the `rng`, do not capture mutable state.
-
+Any callable matching `Strategy = (initial, rng) -> Iterator[Frontier]` works (tournament selection, mutation, restart-on-stall, etc.). Yield one-row frontiers so downstream trajectory-scoring code stays uniform, respect the `rng`, do not capture mutable state across calls.

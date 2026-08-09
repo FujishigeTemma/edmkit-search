@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 
 import numpy as np
@@ -9,12 +9,12 @@ from edmkit.search.state import States
 
 @dataclass(frozen=True)
 class Frontier:
-    """Immutable batch of search candidates carried between steps.
+    """Immutable batch of search candidates.
 
     The three arrays are aligned along their leading axis: row ``i`` of
-    ``states`` corresponds to ``contexts[i]`` and ``energies[i]``. The
-    frontier is what each ``Step`` consumes and produces; ``run`` then
-    selects the single best row from each frontier to form the
+    ``states`` corresponds to ``contexts[i]`` and ``energies[i]``. A
+    `Strategy` consumes an initial frontier and yields one-row
+    frontiers — the best state found at each depth — as the search
     trajectory.
 
     Attributes
@@ -35,8 +35,8 @@ class Frontier:
         return self.states.shape[0]
 
 
-type Step = Callable[
+type Strategy = Callable[
     [Frontier, np.random.Generator],
-    Frontier,
+    Iterator[Frontier],
 ]
-"""A single search transition: ``(frontier, rng) -> frontier'``. The transition is responsible for expanding the frontier via a `Neighborhood`, scoring the children with an `Energy`, and selecting which survive."""
+"""A full search: ``(initial, rng) -> trajectory``. Given the starting frontier, the strategy owns the whole loop — expanding states via a `Neighborhood`, scoring them with an `Energy`, and deciding which survive — and yields the best state found at each depth as a one-row frontier. Collecting the iterator yields the search trajectory."""

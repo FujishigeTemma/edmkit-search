@@ -9,24 +9,23 @@ sidebar:
 
 Name | Description
 ---- | -----------
-[`Step`](#edmkit.search.strategy.frontier.Step) | A single search transition: ``(frontier, rng) -> frontier'``. The transition is responsible for expanding the frontier via a `Neighborhood`, scoring the children with an `Energy`, and selecting which survive.
+[`Strategy`](#edmkit.search.strategy.frontier.Strategy) | A full search: ``(initial, rng) -> trajectory``. Given the starting frontier, the strategy owns the whole loop — expanding states via a `Neighborhood`, scoring them with an `Energy`, and deciding which survive — and yields the best state found at each depth as a one-row frontier. Collecting the iterator yields the search trajectory.
 
-### `Step` {#edmkit.search.strategy.frontier.Step}
+### `Strategy` {#edmkit.search.strategy.frontier.Strategy}
 
 ```python
-type Step = Callable[[Frontier, np.random.Generator], Frontier]
+type Strategy = Callable[[Frontier, np.random.Generator], Iterator[Frontier]]
 ```
 
-A single search transition: ``(frontier, rng) -> frontier'``. The transition is responsible for expanding the frontier via a `Neighborhood`, scoring the children with an `Energy`, and selecting which survive.
+A full search: ``(initial, rng) -> trajectory``. Given the starting frontier, the strategy owns the whole loop — expanding states via a `Neighborhood`, scoring them with an `Energy`, and deciding which survive — and yields the best state found at each depth as a one-row frontier. Collecting the iterator yields the search trajectory.
 
 **Functions:**
 
 Name | Description
 ---- | -----------
-[`Frontier`](#Frontier) | Immutable batch of search candidates carried between steps.
-[`beam`](#beam) | Build a beam-search `Step` that keeps the ``width`` lowest-energy children.
-[`greedy`](#greedy) | Build a greedy `Step` that keeps only the single best child per parent.
-[`run`](#run) | Iterate ``step`` from ``initial`` and yield the best survivor of each step.
+[`Frontier`](#Frontier) | Immutable batch of search candidates.
+[`beam`](#beam) | Build a chokudai-search `Strategy`.
+[`greedy`](#greedy) | Build a greedy `Strategy` that commits to the single best child at each depth.
 
 ## `Frontier`
 
@@ -34,12 +33,12 @@ Name | Description
 Frontier(states: States, contexts: Contexts, energies: Energies) -> None
 ```
 
-Immutable batch of search candidates carried between steps.
+Immutable batch of search candidates.
 
 The three arrays are aligned along their leading axis: row ``i`` of
-``states`` corresponds to ``contexts[i]`` and ``energies[i]``. The
-frontier is what each ``Step`` consumes and produces; ``run`` then
-selects the single best row from each frontier to form the
+``states`` corresponds to ``contexts[i]`` and ``energies[i]``. A
+`Strategy` consumes an initial frontier and yields one-row
+frontiers — the best state found at each depth — as the search
 trajectory.
 
 **Attributes:**
@@ -55,17 +54,25 @@ Name | Type | Description
 ## `beam`
 
 ```python
-beam(E: Energy, N: Neighborhood, *, width: int, cutoff: float = float('inf')) -> Step
+beam(E: Energy, N: Neighborhood, *, width: int, depth: int, beams: int, cutoff: float = float('inf')) -> Strategy
 ```
 
-Build a beam-search `Step` that keeps the ``width`` lowest-energy children.
+Build a chokudai-search `Strategy`.
 
-On each invocation, the step expands the incoming frontier via
-``N``, scores every child with ``E``, drops children whose energy
-exceeds ``cutoff``, and then keeps the ``width`` survivors with
-the lowest energy. The argsort is stable, so ties resolve in the
-order ``N`` emitted the children — which, for the standard
-`forward` neighborhood, means a per-row random tie-break.
+Chokudai search keeps one candidate queue per depth, seeded with
+the initial frontier at depth 0. Each *beam* is one pass over the
+depths in order: it pops the ``width`` lowest-energy states from
+the depth-``d`` queue, expands them via ``N``, scores the children
+with ``E``, and pushes the survivors (those with energy at most
+``cutoff``) into the depth-``d+1`` queue. Popped states never
+return, so each additional beam expands the next-best states left
+behind by earlier beams — a single beam is exactly classic beam
+search of width ``width``, and every extra beam widens the search
+around the depths where the earlier ones committed.
+
+Within one depth, ties in the pop order resolve stably in
+insertion order — which, for the standard `forward` neighborhood,
+means a per-row random tie-break.
 
 **Parameters:**
 
@@ -73,33 +80,37 @@ Name | Type | Description | Default
 ---- | ---- | ----------- | -------
 `E` | <code>[Energy](#edmkit.search.energy.Energy)</code> | Energy used to score children. Must already be wired to its plan executor (see `Energy`). | *required*
 `N` | <code>[Neighborhood](#edmkit.search.neighborhood.Neighborhood)</code> | Neighborhood used to expand parents. | *required*
-`width` | <code>[int](#int)</code> | Number of children retained per step. Must be at least 1. ``width=1`` reduces this to `greedy`. | *required*
-`cutoff` | <code>[float](#float)</code> | Children with energy strictly greater than ``cutoff`` are discarded before truncation. ``inf`` disables the cutoff. | <code>``float("inf")``</code>
+`width` | <code>[int](#int)</code> | Number of states popped per depth per beam. Must be at least 1. | *required*
+`depth` | <code>[int](#int)</code> | Number of depths to search below the initial frontier. Must be non-negative. | *required*
+`beams` | <code>[int](#int)</code> | Number of passes over the depth queues. Must be at least 1. ``beams=1`` reduces this to classic beam search of width ``width``; ``width=1, beams=1`` reduces it to `greedy`. | *required*
+`cutoff` | <code>[float](#float)</code> | Children with energy strictly greater than ``cutoff`` are discarded and never enqueued. ``inf`` disables the cutoff. | <code>``float("inf")``</code>
 
 **Returns:**
 
 Type | Description
 ---- | -----------
-<code>[Step](#edmkit.search.strategy.frontier.Step)</code> | ``(frontier, rng) -> frontier'`` returning a frontier of at most ``width`` rows. Returns an empty frontier when the neighborhood emits no children.
+<code>[Strategy](#edmkit.search.strategy.frontier.Strategy)</code> | ``(initial, rng) -> trajectory`` yielding a one-row frontier per depth ``1..depth`` — the lowest-energy state found at that depth across all beams. Iteration stops early at the first depth the search never reached (e.g. when the neighborhood emits no children). The ``rng`` is threaded into ``N`` so the whole search is reproducible from a single seed.
 
 **Raises:**
 
 Type | Description
 ---- | -----------
-<code>[ValueError](#ValueError)</code> | If ``width < 1``.
+<code>[ValueError](#ValueError)</code> | If ``width < 1``, ``depth < 0``, or ``beams < 1``.
 
 
 
 ## `greedy`
 
 ```python
-greedy(E: Energy, N: Neighborhood, *, cutoff: float = float('inf')) -> Step
+greedy(E: Energy, N: Neighborhood, *, depth: int, cutoff: float = float('inf')) -> Strategy
 ```
 
-Build a greedy `Step` that keeps only the single best child per parent.
+Build a greedy `Strategy` that commits to the single best child at each depth.
 
-Equivalent to `beam` with ``width=1`` — the lowest-energy
-child (subject to ``cutoff``) replaces the frontier on each step.
+Equivalent to `beam` with ``width=1, beams=1`` — a single beam
+that, at every depth, expands only the lowest-energy state
+(subject to ``cutoff``) and never revisits the states it left
+behind.
 
 **Parameters:**
 
@@ -107,82 +118,12 @@ Name | Type | Description | Default
 ---- | ---- | ----------- | -------
 `E` | <code>[Energy](#edmkit.search.energy.Energy)</code> | Energy used to score children. | *required*
 `N` | <code>[Neighborhood](#edmkit.search.neighborhood.Neighborhood)</code> | Neighborhood used to expand parents. | *required*
-`cutoff` | <code>[float](#float)</code> | Children with energy strictly greater than ``cutoff`` are discarded before selection. | <code>``float("inf")``</code>
+`depth` | <code>[int](#int)</code> | Number of depths to search below the initial frontier. Must be non-negative. | *required*
+`cutoff` | <code>[float](#float)</code> | Children with energy strictly greater than ``cutoff`` are discarded before selection. ``inf`` disables the cutoff. | <code>``float("inf")``</code>
 
 **Returns:**
 
 Type | Description
 ---- | -----------
-<code>[Step](#edmkit.search.strategy.frontier.Step)</code> | ``(frontier, rng) -> frontier'`` returning a frontier of at most one row.
-
-
-
-## `run`
-
-```python
-run(initial: Frontier, step: Step, *, max_steps: int, rng: np.random.Generator) -> Iterator[Frontier]
-```
-
-Iterate ``step`` from ``initial`` and yield the best survivor of each step.
-
-On each iteration, ``step`` is applied to the current frontier;
-the row with the lowest energy is yielded as a one-row frontier,
-and the *full* post-step frontier feeds the next iteration. The
-iterator terminates early when ``step`` returns an empty frontier
-(i.e. the search has run out of candidates) or after ``max_steps``
-iterations, whichever comes first.
-
-**Parameters:**
-
-Name | Type | Description | Default
----- | ---- | ----------- | -------
-`initial` | <code>[Frontier](#edmkit.search.strategy.frontier.Frontier)</code> | Starting frontier. For the standard forward-selection setup this is the empty state ``state.initial()`` paired with the energy's ``initial_context``. | *required*
-`step` | <code>[Step](#edmkit.search.strategy.frontier.Step)</code> | Per-iteration transition (e.g. from `beam` or `greedy`). | *required*
-`max_steps` | <code>[int](#int)</code> | Upper bound on the number of iterations. Must be non-negative. | *required*
-`rng` | <code>[Generator](#numpy.random.Generator)</code> | Generator threaded into ``step`` (which in turn passes it to the neighborhood) so the whole search is reproducible from a single seed. | *required*
-
-**Yields:**
-
-Type | Description
----- | -----------
-<code>[Frontier](#edmkit.search.strategy.frontier.Frontier)</code> | One-row frontier — the best survivor of each step. Collecting these yields the search trajectory.
-
-**Raises:**
-
-Type | Description
----- | -----------
-<code>[ValueError](#ValueError)</code> | If ``max_steps`` is negative.
-
-**Examples:**
-
-```python
-import numpy as np
-
-from edmkit.search import energy, neighborhood, state, strategy
-
-initial_context, plan = energy.cross.holdout(...)
-
-with ThreadPoolExecutor() as pool:
-    def E(states, contexts):
-        futures = [pool.submit(job) for job in plan(states, contexts)]
-        n = states.shape[0]
-        energies = np.empty(n, dtype=np.float64)
-        new_contexts = np.empty((n, initial_context.shape[1]), dtype=np.float64)
-        for f in futures:
-            s, e, c = f.result()
-            energies[s] = e
-            new_contexts[s] = c
-        return energies, new_contexts
-
-    N = neighborhood.forward(data.X.shape[1])
-    S = strategy.greedy(E, N)
-    initial = strategy.Frontier(
-        states=state.initial(),
-        contexts=initial_context,
-        energies=np.array([float("inf")], dtype=np.float64),
-    )
-
-    trace = list(strategy.run(initial, S, max_steps=8, rng=np.random.default_rng(0)))
-selected = trace[-1].states[0]
-```
+<code>[Strategy](#edmkit.search.strategy.frontier.Strategy)</code> | ``(initial, rng) -> trajectory`` yielding a one-row frontier per depth ``1..depth``.
 

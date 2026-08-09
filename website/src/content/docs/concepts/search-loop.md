@@ -29,19 +29,17 @@ class Frontier:
 
 The three arrays are aligned along the leading axis. Every step produces a fresh frontier.
 
-A step is what a `Strategy` *is*. The body of `beam` reduces to:
+A `Strategy` owns this loop. One expansion — the unit both `greedy` and `beam` are built from — reduces to:
 
 ```python
-def step(frontier: Frontier, rng: np.random.Generator) -> Frontier:
-    children, parents_idx = N(frontier.states, rng)              # (M, d+1), (M,)
-    energies, contexts = E(children, frontier.contexts[parents_idx])  # (M,), (M, K)
-    order = np.argsort(energies, kind="stable")[:width]          # keep best `width`
-    return Frontier(children[order], contexts[order], energies[order])
+children, parents_idx = N(parents.states, rng)                   # (M, d+1), (M,)
+energies, contexts = E(children, parents.contexts[parents_idx])  # (M,), (M, K)
+survivors = select(children, contexts, energies)                 # cutoff + keep the best
 ```
 
 The runtime cost lives entirely inside `E(...)`. Everything around it is index gymnastics.
 
-`strategy.run` drives this step from an initial frontier up to `max_steps` times. After every step it yields the *single* lowest-energy survivor as a one-row frontier; the *full* post-step frontier is threaded into the next iteration internally.
+`strategy.greedy` repeats this expansion once per depth from the initial frontier, always committing to the single best child; `strategy.beam` (chokudai search) arranges the same expansion into per-depth queues swept by multiple beams — see [Strategy](/edmkit-search/concepts/strategy/). Either way the strategy yields the *single* lowest-energy state found at each depth as a one-row frontier.
 
 ```mermaid
 flowchart TD
@@ -49,19 +47,19 @@ flowchart TD
     F(["Frontier<br/>(N, d)"])
     N["Neighborhood — expand"]
     E["Energy — score"]
-    Sel["select<br/>argsort + keep width best"]
-    Fout(["Frontier'<br/>(W, d+1)"])
-    T[("trace<br/>one row per step")]
+    Sel["select<br/>cutoff + keep the best"]
+    Fout(["survivors<br/>(·, d+1)"])
+    T[("trace<br/>one row per depth")]
     I --> F
     F -->|parent states| N
     N -->|"M children + parents_idx (M,)"| E
     E -->|"energies (M,), contexts (M, K)"| Sel
     Sel --> Fout
-    Fout -.->|fed to next iteration| F
-    Fout -->|argmin row<br/>yielded by run| T
+    Fout -.->|fed to the next depth| F
+    Fout -->|argmin row<br/>yielded by the strategy| T
 ```
 
-For the standard [`forward`](/edmkit-search/concepts/neighborhood/) neighborhood, each iteration grows `d` by 1. Starting from `(1, 0)`, **`trace[j].states[0]` is the selected index set of length `j + 1`**. The iterator stops early when a step returns an empty frontier or after `max_steps` iterations.
+For the standard [`forward`](/edmkit-search/concepts/neighborhood/) neighborhood, each depth grows `d` by 1. Starting from `(1, 0)`, **`trace[j].states[0]` is the selected index set of length `j + 1`**. The iterator stops early when the neighborhood emits no children, or after `depth` depths.
 
 ## The three signatures
 
@@ -69,7 +67,7 @@ For the standard [`forward`](/edmkit-search/concepts/neighborhood/) neighborhood
 | ---- | --------- | --------- |
 | **Neighborhood** | `(parents, rng) -> (children, parents_idx)` | `forward(n)` |
 | **Energy** | `(states, contexts) -> (energies, contexts')` | `holdout`, `loo`, `folds` |
-| **Strategy** | `Step = (Frontier, rng) -> Frontier'` | `greedy`, `beam(width=W)` |
+| **Strategy** | `(initial, rng) -> Iterator[Frontier]` | `greedy`, `beam(width=W, beams=B)` |
 
 There is no base class. The three are plain callable protocols (and one frozen `dataclass`).
 

@@ -50,14 +50,14 @@ def test_minimal_greedy_run():
     )
     E = to_energy(initial_context, plan)
     N = neighborhood.forward(data.X.shape[1])
-    step = strategy.greedy(E, N)
+    S = strategy.greedy(E, N, depth=2)
     initial = strategy.Frontier(
         states=state.initial(),
         contexts=initial_context,
         energies=np.array([float("inf")], dtype=np.float64),
     )
 
-    trace = list(strategy.run(initial, step, max_steps=2, rng=rng))
+    trace = list(S(initial, rng))
     assert len(trace) == 2
     assert all(np.isfinite(frontier.energies).all() for frontier in trace)
 

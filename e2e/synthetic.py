@@ -122,15 +122,14 @@ def main() -> None:
             return energies, new_contexts
 
         N = neighborhood.forward(data.X.shape[1])
-        S = strategy.greedy(E, N)
+        S = strategy.greedy(E, N, depth=K_signal + 2)
         initial = strategy.Frontier(
             states=state.initial(),
             contexts=initial_context,
             energies=np.array([float("inf")], dtype=np.float64),
         )
 
-        max_steps = K_signal + 2
-        trace = list(strategy.run(initial, S, max_steps=max_steps, rng=rng))
+        trace = list(S(initial, rng))
 
     if not trace:
         print("No variables selected.")

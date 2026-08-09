@@ -22,7 +22,7 @@ flowchart LR
     Ti["inner.train"]
     Vi["inner.validation"]
     En[("energy.cross.holdout(train, inner, ...)<br/>or energy.cross.folds / energy.cross.loo")]
-    Ru["strategy.run(...) → trace"]
+    Ru["strategy.greedy / strategy.beam<br/>S(initial, rng) → trace"]
     Sc["score validation.Y vs<br/>predictions per step → val[j]"]
     D --> O
     O --> Tr
@@ -46,7 +46,7 @@ If the search peeks at the outer arm, the per-step validation curve stops being 
 
 ## Reading the trace
 
-`strategy.run` yields one frontier per step. The single-row `Frontier` carries the search's *training-side* energy in `energies[0]`. Score the same indices against the outer validation arm to get the *generalization-side* number:
+A strategy yields one frontier per depth. The single-row `Frontier` carries the search's *training-side* energy in `energies[0]`. Score the same indices against the outer validation arm to get the *generalization-side* number:
 
 ```python
 predictions = np.zeros((len(trace), *validation.Y.shape))
@@ -68,7 +68,7 @@ Both are "lower is better." Patterns to recognize:
 | ------- | -------------- |
 | Training decreases, validation tracks it, then validation flattens | Reached the informative subset; further additions are noise. |
 | Training decreases, validation **rises** after step `k` | Classic overfit. `k` is the natural stopping point. |
-| Training and validation both jagged | Energy is too noisy — try a wider beam, more folds, or a coarser horizon. |
+| Training and validation both jagged | Energy is too noisy — try a wider beam or more beams, more folds, or a coarser horizon. |
 | Validation lower than training at low `d` | Inner fold is small or unrepresentative — increase inner-train ratio or switch to `folds`. |
 
 Model selection is `best_step = int(np.argmin(val))`; the reported subset is `trace[best_step].states[0]`.
@@ -144,16 +144,16 @@ with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
         for energy_label, (initial_context, plan) in energies:
             E = to_energy(initial_context, plan, pool)
 
+            initial = strategy.Frontier(
+                states=state.initial(),
+                contexts=initial_context,
+                energies=np.array([float("inf")], dtype=np.float64),
+            )
             for strategy_label, S in [
-                ("greedy", strategy.greedy(E, N)),
-                ("beam",   strategy.beam(E, N, width=3)),
+                ("greedy", strategy.greedy(E, N, depth=10)),
+                ("beam",   strategy.beam(E, N, width=1, depth=10, beams=3)),
             ]:
-                initial = strategy.Frontier(
-                    states=state.initial(),
-                    contexts=initial_context,
-                    energies=np.array([float("inf")], dtype=np.float64),
-                )
-                trace = list(strategy.run(initial, S, max_steps=10, rng=np.random.default_rng(0)))
+                trace = list(S(initial, np.random.default_rng(0)))
 
                 predictions = np.zeros((len(trace), *validation.Y.shape))
                 for j in range(len(trace)):
@@ -183,6 +183,6 @@ Because the outer fold and inner splits are fixed outside all loops, every row o
 | ---------------- | --- | ---- |
 | Is my selected subset stable across loss choices? | energy, strategy | metric |
 | Is the inner-fold geometry biasing the search? | metric, strategy | energy (`holdout` vs `folds`, vary `T`) |
-| Is the search committing too early? | metric, energy | strategy (`greedy` vs `beam(width=W)`) |
+| Is the search committing too early? | metric, energy | strategy (`greedy` vs `beam(width=W, beams=B)`) |
 | Is my neighborhood the bottleneck? | metric, energy, strategy | neighborhood (custom expander) |
 

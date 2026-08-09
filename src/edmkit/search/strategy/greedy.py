@@ -1,19 +1,23 @@
 from edmkit.search.energy import Energy
 from edmkit.search.neighborhood import Neighborhood
-from edmkit.search.strategy.beam import beam
-from edmkit.search.strategy.frontier import Step
+
+from .beam import beam
+from .frontier import Strategy
 
 
 def greedy(
     E: Energy,
     N: Neighborhood,
     *,
+    depth: int,
     cutoff: float = float("inf"),
-) -> Step:
-    """Build a greedy `Step` that keeps only the single best child per parent.
+) -> Strategy:
+    """Build a greedy `Strategy` that commits to the single best child at each depth.
 
-    Equivalent to `beam` with ``width=1`` — the lowest-energy
-    child (subject to ``cutoff``) replaces the frontier on each step.
+    Equivalent to `beam` with ``width=1, beams=1`` — a single beam
+    that, at every depth, expands only the lowest-energy state
+    (subject to ``cutoff``) and never revisits the states it left
+    behind.
 
     Parameters
     ----------
@@ -21,14 +25,17 @@ def greedy(
         Energy used to score children.
     N : Neighborhood
         Neighborhood used to expand parents.
+    depth : int
+        Number of depths to search below the initial frontier. Must
+        be non-negative.
     cutoff : float, default ``float("inf")``
         Children with energy strictly greater than ``cutoff`` are
-        discarded before selection.
+        discarded before selection. ``inf`` disables the cutoff.
 
     Returns
     -------
-    Step
-        ``(frontier, rng) -> frontier'`` returning a frontier of at
-        most one row.
+    Strategy
+        ``(initial, rng) -> trajectory`` yielding a one-row frontier
+        per depth ``1..depth``.
     """
-    return beam(E, N, width=1, cutoff=cutoff)
+    return beam(E, N, width=1, depth=depth, beams=1, cutoff=cutoff)

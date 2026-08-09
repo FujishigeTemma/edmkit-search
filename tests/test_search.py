@@ -210,29 +210,22 @@ class TestForward:
 
 
 class TestStrategy:
-    def test_greedy_equals_beam_width_one(self) -> None:
+    def test_greedy_equals_beam_width_one_single_beam(self) -> None:
         initial, E = constant_energy(lambda states: states.sum(axis=1).astype(np.float64))
         N = neighborhood.forward(5)
 
-        greedy_step = strategy.greedy(E, N)
-        beam_step = strategy.beam(E, N, width=1)
-
         greedy_trace = [
             f.states[0].copy()
-            for f in strategy.run(
+            for f in strategy.greedy(E, N, depth=3)(
                 initial_frontier(initial),
-                greedy_step,
-                max_steps=3,
-                rng=np.random.default_rng(7),
+                np.random.default_rng(7),
             )
         ]
         beam_trace = [
             f.states[0].copy()
-            for f in strategy.run(
+            for f in strategy.beam(E, N, width=1, depth=3, beams=1)(
                 initial_frontier(initial),
-                beam_step,
-                max_steps=3,
-                rng=np.random.default_rng(7),
+                np.random.default_rng(7),
             )
         ]
 
@@ -240,68 +233,111 @@ class TestStrategy:
         for g, b in zip(greedy_trace, beam_trace, strict=True):
             np.testing.assert_array_equal(g, b)
 
-    def test_run_stops_on_empty_frontier(self) -> None:
+    def test_trajectory_is_empty_when_neighborhood_is_empty(self) -> None:
         initial, E = constant_energy(lambda states: np.zeros(states.shape[0]))
-        trace = list(
-            strategy.run(
-                initial_frontier(initial),
-                strategy.greedy(E, empty_neighborhood()),
-                max_steps=3,
-                rng=np.random.default_rng(0),
-            )
-        )
+        S = strategy.greedy(E, empty_neighborhood(), depth=3)
+
+        trace = list(S(initial_frontier(initial), np.random.default_rng(0)))
 
         assert trace == []
 
-    def test_run_respects_max_steps(self) -> None:
+    def test_trajectory_respects_depth(self) -> None:
         initial, E = constant_energy(lambda states: np.full(states.shape[0], states.shape[1]))
-        trace = list(
-            strategy.run(
-                initial_frontier(initial),
-                strategy.greedy(E, neighborhood.forward(5)),
-                max_steps=2,
-                rng=np.random.default_rng(0),
-            )
-        )
+        S = strategy.greedy(E, neighborhood.forward(5), depth=2)
+
+        trace = list(S(initial_frontier(initial), np.random.default_rng(0)))
 
         assert len(trace) == 2
 
     def test_cutoff_filters_after_energy_evaluation(self) -> None:
-        seen_indices: list[int] = []
+        seen: list[list[int]] = []
 
         def fn(states: States) -> np.ndarray:
-            seen_indices.extend(states[:, -1].tolist())
+            seen.extend(states.tolist())
             return states[:, -1].astype(np.float64)
 
         initial, E = constant_energy(fn)
         N = fixed_neighborhood([0, 1, 2])
 
-        step = strategy.beam(E, N, width=3, cutoff=1.0)
-        out = step(initial_frontier(initial), np.random.default_rng(0))
+        S = strategy.beam(E, N, width=3, depth=2, beams=1, cutoff=1.0)
+        trace = list(S(initial_frontier(initial), np.random.default_rng(0)))
 
-        assert seen_indices == [0, 1, 2]
-        assert out.states[:, -1].tolist() == [0, 1]
+        # Depth 1: every child is evaluated before the cutoff applies.
+        assert seen[:3] == [[0], [1], [2]]
+        # Depth 2: only the survivors 0 and 1 were expanded — 2 fell to the cutoff.
+        assert sorted(row[0] for row in seen[3:]) == [0, 0, 0, 1, 1, 1]
+        assert trace[0].states.tolist() == [[0]]
+        assert trace[1].states.tolist() == [[0, 0]]
+
+    def test_extra_beams_expand_states_the_first_beam_left_behind(self) -> None:
+        # Depth-1 energies favour 0, but the only good depth-2 state
+        # hides under 1 — a single beam misses it, a second beam pops
+        # the leftover [1] and finds it.
+        def fn(states: States) -> np.ndarray:
+            def score(row: tuple[int, ...]) -> float:
+                if len(row) == 1:
+                    return float(row[0])
+                if row == (1, 2):
+                    return -5.0
+                return 10.0 if row[0] == 0 else 8.0
+
+            return np.array([score(tuple(row)) for row in states.tolist()], dtype=np.float64)
+
+        initial, E = constant_energy(fn)
+        N = fixed_neighborhood([0, 1, 2])
+
+        single_beam = strategy.beam(E, N, width=1, depth=2, beams=1)
+        double_beam = strategy.beam(E, N, width=1, depth=2, beams=2)
+
+        single = list(single_beam(initial_frontier(initial), np.random.default_rng(0)))
+        double = list(double_beam(initial_frontier(initial), np.random.default_rng(0)))
+
+        assert single[-1].energies[0] == 10.0
+        assert double[-1].states.tolist() == [[1, 2]]
+        assert double[-1].energies[0] == -5.0
 
     def test_frontier_states_expand_independently(self) -> None:
-        _, E = constant_energy(lambda states: states[:, -1].astype(np.float64))
-        step = strategy.beam(E, neighborhood.forward(3), width=10)
+        seen: list[np.ndarray] = []
+
+        def fn(states: States) -> np.ndarray:
+            seen.append(states.copy())
+            return states[:, -1].astype(np.float64)
+
+        _, E = constant_energy(fn)
         frontier = strategy.Frontier(
             states=np.array([[0], [1]], dtype=np.int64),
             contexts=np.empty((2, 0), dtype=np.float64),
             energies=np.zeros(2, dtype=np.float64),
         )
 
-        out = step(frontier, np.random.default_rng(1))
+        S = strategy.beam(E, neighborhood.forward(3), width=2, depth=1, beams=1)
+        list(S(frontier, np.random.default_rng(1)))
 
-        assert out.states.shape[1] == 2
-        rows = {tuple(row) for row in out.states.tolist()}
+        children = seen[0]
+        assert children.shape[1] == 2
+        rows = {tuple(row) for row in children.tolist()}
         assert (0, 0) not in rows
         assert (1, 1) not in rows
 
-    def test_beam_width_must_be_positive(self) -> None:
+    def test_beam_parameters_are_validated(self) -> None:
         _, E = constant_energy(lambda states: np.zeros(states.shape[0]))
+        N = neighborhood.forward(2)
+
         with pytest.raises(ValueError, match="width"):
-            strategy.beam(E, neighborhood.forward(2), width=0)
+            strategy.beam(E, N, width=0, depth=1, beams=1)
+        with pytest.raises(ValueError, match="depth"):
+            strategy.beam(E, N, width=1, depth=-1, beams=1)
+        with pytest.raises(ValueError, match="beams"):
+            strategy.beam(E, N, width=1, depth=1, beams=0)
+
+    def test_beam_stops_trajectory_when_neighborhood_dries_up(self) -> None:
+        initial, E = constant_energy(lambda states: np.zeros(states.shape[0]))
+
+        S = strategy.beam(E, neighborhood.forward(2), width=2, depth=5, beams=3)
+        trace = list(S(initial_frontier(initial), np.random.default_rng(0)))
+
+        # The universe has only 2 indices — depths 3..5 are unreachable.
+        assert len(trace) == 2
 
 
 # --------------------------------------------------------------- cross holdout
@@ -591,10 +627,13 @@ class TestTrajectory:
         base = to_energy(initial, plan)
 
         seen: list[np.ndarray] = []
+        produced: list[tuple[np.ndarray, np.ndarray]] = []
 
         def traced(states: States, contexts: Contexts) -> tuple[Energies, Contexts]:
             seen.append(contexts.copy())
-            return base(states, contexts)
+            energies, new_contexts = base(states, contexts)
+            produced.append((energies.copy(), new_contexts.copy()))
+            return energies, new_contexts
 
         forward_N = neighborhood.forward(X.shape[1])
         captured_parents: list[np.ndarray] = []
@@ -604,18 +643,19 @@ class TestTrajectory:
             captured_parents.append(parents.copy())
             return children, parents
 
-        beam_step = strategy.beam(traced, N, width=2)
-        rng = np.random.default_rng(0)
+        S = strategy.beam(traced, N, width=2, depth=2, beams=1)
+        list(S(initial_frontier(initial), np.random.default_rng(0)))
 
-        first = beam_step(initial_frontier(initial), rng)
-        # E in step 1 received initial indexed by the parent map.
+        # E at depth 1 received initial indexed by the parent map.
         np.testing.assert_array_equal(seen[0], initial[captured_parents[0]])
 
-        beam_step(first, rng)
-        # E in step 2 received first.contexts indexed by the parent map.
-        np.testing.assert_array_equal(seen[1], first.contexts[captured_parents[1]])
+        # E at depth 2 received the contexts of the two lowest-energy
+        # depth-1 children indexed by the parent map.
+        depth1_energies, depth1_contexts = produced[0]
+        top = np.argsort(depth1_energies, kind="stable")[:2]
+        np.testing.assert_array_equal(seen[1], depth1_contexts[top][captured_parents[1]])
 
-    def test_run_completes_with_readonly_arrays(self) -> None:
+    def test_search_completes_with_readonly_arrays(self) -> None:
         X, Y = arrays()
         split = folds_for_arrays()
         base_initial, base_plan = energy.cross.folds(
@@ -639,14 +679,8 @@ class TestTrajectory:
 
         N = neighborhood.forward(X.shape[1])
 
-        trace = list(
-            strategy.run(
-                initial_frontier(initial),
-                strategy.greedy(E, N),
-                max_steps=2,
-                rng=np.random.default_rng(0),
-            )
-        )
+        S = strategy.greedy(E, N, depth=2)
+        trace = list(S(initial_frontier(initial), np.random.default_rng(0)))
 
         assert len(trace) == 2
 

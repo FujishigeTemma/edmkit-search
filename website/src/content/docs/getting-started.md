@@ -176,7 +176,7 @@ This closure stays inside the `with ThreadPoolExecutor(...) as pool:` block from
 
 ```python
 N = neighborhood.forward(data.X.shape[1])
-S = strategy.greedy(E, N)
+S = strategy.greedy(E, N, depth=K_signal + 2)
 
 initial = strategy.Frontier(
     states=state.initial(),                              # shape (1, 0): empty seed
@@ -184,16 +184,13 @@ initial = strategy.Frontier(
     energies=np.array([float("inf")], dtype=np.float64), # any real score beats infinity
 )
 
-trace = list(
-    strategy.run(initial, S, max_steps=K_signal + 2, rng=np.random.default_rng(0))
-)
+trace = list(S(initial, np.random.default_rng(0)))
 ```
 
 - `neighborhood.forward(n)` expands a state of length `d` into `n - d` children, each adding one index.
-- `strategy.greedy(E, N)` keeps the single lowest-energy child per step.
-- `strategy.run` yields one frontier per step, containing the best survivor.
+- `strategy.greedy(E, N, depth=D)` runs the whole search, committing to the single lowest-energy child at each depth, and yields one one-row frontier per depth — the best state found there.
 
-After `K_signal + 2 = 8` steps, `trace[j].states[0]` is the selected subset of `j + 1` indices.
+After `K_signal + 2 = 8` depths, `trace[j].states[0]` is the selected subset of `j + 1` indices.
 
 ## Step 6 — Score the trajectory on the outer validation arm
 
@@ -232,10 +229,10 @@ for metric_label, metric in [("Corr", corr), ("MAE", mae), ("RMSE", rmse)]:
     ]:
         E = to_energy(initial_context, plan)
         for strategy_label, S in [
-            ("greedy", strategy.greedy(E, N)),
-            ("beam", strategy.beam(E, N, width=3)),
+            ("greedy", strategy.greedy(E, N, depth=10)),
+            ("beam", strategy.beam(E, N, width=1, depth=10, beams=3)),
         ]:
-            trace = list(strategy.run(initial, S, max_steps=10, rng=np.random.default_rng(0)))
+            trace = list(S(initial, np.random.default_rng(0)))
             # ... score trace against validation ...
 ```
 

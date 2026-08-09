@@ -49,7 +49,7 @@ with ThreadPoolExecutor() as pool:
             new_contexts[s] = c
         return energies, new_contexts
 
-    # ... strategy.run(...) inside the with-block
+    # ... run the strategy — list(S(initial, rng)) — inside the with-block
 ```
 
 For sequential execution, replace the futures loop with `for job in plan(states, contexts): sl, e, c = job(); ...`. For a process pool, hand the jobs to `ProcessPoolExecutor.map`.

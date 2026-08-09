@@ -16,7 +16,7 @@ It returns two arrays:
 
 ## Why `parents_idx` exists
 
-A neighborhood does not know about contexts — that is the energy's job. `parents_idx` is the back-pointer that lets a strategy thread parent-side data alongside the children without baking context-awareness into the neighborhood. See [Search Loop → The loop, in code](/edmkit-search/concepts/search-loop/#the-loop-in-code) for how `beam` uses it.
+A neighborhood does not know about contexts — that is the energy's job. `parents_idx` is the back-pointer that lets a strategy thread parent-side data alongside the children without baking context-awareness into the neighborhood. See [Search Loop → The loop, in code](/edmkit-search/concepts/search-loop/#the-loop-in-code) for how `greedy` uses it.
 
 ## Forward selection
 
